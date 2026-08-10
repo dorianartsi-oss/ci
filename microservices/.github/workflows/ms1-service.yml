@@ -1,13 +1,13 @@
 # Caller workflow for the "demo" microservice.
 # The ONLY file a service team owns besides build_config.json.
-name: CI / demo
+name: CI / ms1
 
 on:
   push:
     branches: [master]
     paths:
-      - 'demo/**'
-      - '.github/workflows/demo-service.yml'
+      - 'ms1/**'
+      - '.github/workflows/ms1-service.yml'
   workflow_dispatch:
     inputs:
       runner_label:
@@ -26,7 +26,7 @@ on:
         default: ''
 
 concurrency:
-  group: ci-demo-${{ github.ref }}
+  group: ci-ms1-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -35,9 +35,9 @@ permissions:
 
 jobs:
   ci:
-    uses: banking-factory/platform-ci/.github/workflows/java-docker-ci.yml@v1
+    uses: banking-factory/platform-ci/.github/workflows/ci.yml@v1
     with:
-      service_path: demo
+      service_path: ms1
       runner_label: ${{ inputs.runner_label || 'private-gcp-runner' }}
       sonar_scan: ${{ inputs.sonar_scan || '' }}
       xray_scan: ${{ inputs.xray_scan || '' }}
