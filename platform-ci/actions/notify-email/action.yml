@@ -1,0 +1,110 @@
+name: Notify by email
+description: >
+  Sends the build report to the triggering developer and the service owners.
+  The Ansible pipeline talked to Exchange Web Services directly; GitHub Actions
+  has no EWS transport, so this relays through Exchange's SMTP endpoint instead.
+  Same mailbox, same recipients, no Python.
+
+inputs:
+  smtp_server:
+    description: Exchange SMTP relay host
+    required: true
+  smtp_port:
+    description: SMTP port (587 STARTTLS, 465 implicit TLS, 25 anonymous relay)
+    required: false
+    default: '587'
+  smtp_username:
+    description: Service-account mailbox. Blank for an anonymous internal relay.
+    required: false
+    default: ''
+  smtp_password:
+    description: Service-account password
+    required: false
+    default: ''
+  from_address:
+    required: true
+    description: Envelope sender
+  recipients:
+    description: Comma-separated recipients (owners); the actor is always added
+    required: false
+    default: ''
+  status:
+    description: success | failure | cancelled
+    required: true
+  service:
+    required: true
+    description: Service name
+  image:
+    description: Fully qualified image that was pushed
+    required: false
+    default: '(not pushed)'
+  duration:
+    required: false
+    default: ''
+    description: Human-readable build duration
+
+runs:
+  using: composite
+  steps:
+    - name: Build recipient list
+      id: to
+      shell: bash
+      env:
+        RECIPIENTS: ${{ inputs.recipients }}
+      run: |
+        set -euo pipefail
+        actor_mail="${GITHUB_ACTOR}@corporate.io"
+        list=$(printf '%s,%s' "$RECIPIENTS" "$actor_mail" \
+          | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+          | grep -v '^$' | sort -u | paste -sd, -)
+        echo "list=$list" >> "$GITHUB_OUTPUT"
+
+    - name: Compose body
+      id: body
+      shell: bash
+      env:
+        STATUS: ${{ inputs.status }}
+        SERVICE: ${{ inputs.service }}
+        IMAGE: ${{ inputs.image }}
+        DURATION: ${{ inputs.duration }}
+      run: |
+        set -euo pipefail
+        case "$STATUS" in
+          success) colour="#1a7f37"; word="SUCCEEDED" ;;
+          failure) colour="#cf222e"; word="FAILED" ;;
+          *)       colour="#9a6700"; word="$(echo "$STATUS" | tr '[:lower:]' '[:upper:]')" ;;
+        esac
+        run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+        {
+          echo 'html<<HTML_EOF'
+          cat <<HTML
+        <div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px">
+          <h2 style="color:$colour;margin-bottom:4px">CI $word &mdash; $SERVICE</h2>
+          <table cellpadding="6" style="border-collapse:collapse">
+            <tr><td><b>Repository</b></td><td>$GITHUB_REPOSITORY</td></tr>
+            <tr><td><b>Branch</b></td><td>$GITHUB_REF_NAME</td></tr>
+            <tr><td><b>Commit</b></td><td><code>$GITHUB_SHA</code></td></tr>
+            <tr><td><b>Triggered by</b></td><td>$GITHUB_ACTOR</td></tr>
+            <tr><td><b>Run</b></td><td>#$GITHUB_RUN_NUMBER (attempt $GITHUB_RUN_ATTEMPT)</td></tr>
+            <tr><td><b>Image</b></td><td>$IMAGE</td></tr>
+            <tr><td><b>Duration</b></td><td>$DURATION</td></tr>
+          </table>
+          <p><a href="$run_url">Open the run log and build summary</a></p>
+        </div>
+        HTML
+          echo 'HTML_EOF'
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Send
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: ${{ inputs.smtp_server }}
+        server_port: ${{ inputs.smtp_port }}
+        secure: ${{ inputs.smtp_port == '465' }}
+        username: ${{ inputs.smtp_username }}
+        password: ${{ inputs.smtp_password }}
+        from: CI Pipeline <${{ inputs.from_address }}>
+        to: ${{ steps.to.outputs.list }}
+        subject: "[CI ${{ inputs.status }}] ${{ inputs.service }} — ${{ github.ref_name }} #${{ github.run_number }}"
+        html_body: ${{ steps.body.outputs.html }}
+        ignore_cert: false
