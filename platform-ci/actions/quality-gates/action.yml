@@ -1,0 +1,71 @@
+name: Resolve quality gates
+description: >
+  Reads the per-CMDB quality-gate thresholds from the central gates repo,
+  falling back to default.json. Replaces the Ansible-era "Fetch-Gates" job.
+
+inputs:
+  cmdb_code:
+    description: CMDB code used to pick gates/<cmdb_code>.json
+    required: true
+  gates_repo:
+    description: owner/repo holding the gate definitions
+    required: false
+    default: banking-factory/quality-gates
+  gates_ref:
+    description: Ref of the gates repo to read
+    required: false
+    default: main
+  token:
+    description: Token with read access to the gates repo
+    required: true
+
+outputs:
+  gates_json:
+    description: Resolved gate thresholds as compact JSON
+    value: ${{ steps.resolve.outputs.gates_json }}
+  source:
+    description: Which gate file was used
+    value: ${{ steps.resolve.outputs.source }}
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout gates repo
+      uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.gates_repo }}
+        ref: ${{ inputs.gates_ref }}
+        token: ${{ inputs.token }}
+        path: .quality-gates
+        fetch-depth: 1
+
+    - name: Resolve thresholds
+      id: resolve
+      shell: bash
+      run: |
+        set -euo pipefail
+        root=".quality-gates/gates"
+        candidate="$root/${{ inputs.cmdb_code }}.json"
+        if [[ -f "$candidate" ]]; then
+          source_file="$candidate"
+        else
+          source_file="$root/default.json"
+        fi
+        if [[ ! -f "$source_file" ]]; then
+          echo "::error::No gate file found (looked for $candidate and $root/default.json)"
+          exit 1
+        fi
+
+        # Shape the flat gate file into the same tree as build_config.json so the
+        # merge in resolve-config is a plain deep-merge.
+        gates=$(jq -c '{scan: {sonar: {quality_gate: .sonar}}, tests: .tests}' "$source_file")
+
+        echo "gates_json=$gates" >> "$GITHUB_OUTPUT"
+        echo "source=$source_file" >> "$GITHUB_OUTPUT"
+        echo "Using gate file: $source_file"
+        jq . "$source_file"
+
+    - name: Clean up gates checkout
+      if: always()
+      shell: bash
+      run: rm -rf .quality-gates
