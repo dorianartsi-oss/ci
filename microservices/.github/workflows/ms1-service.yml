@@ -1,0 +1,44 @@
+# Caller workflow for the "demo" microservice.
+# The ONLY file a service team owns besides build_config.json.
+name: CI / demo
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'demo/**'
+      - '.github/workflows/demo-service.yml'
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: Self-hosted runner label
+        type: string
+        default: private-gcp-runner
+      sonar_scan:
+        description: Override SonarQube scan (blank = use build_config.json)
+        type: choice
+        options: ['', 'true', 'false']
+        default: ''
+      xray_scan:
+        description: Override Xray build scan (blank = use build_config.json)
+        type: choice
+        options: ['', 'true', 'false']
+        default: ''
+
+concurrency:
+  group: ci-demo-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  ci:
+    uses: banking-factory/platform-ci/.github/workflows/java-docker-ci.yml@v1
+    with:
+      service_path: demo
+      runner_label: ${{ inputs.runner_label || 'private-gcp-runner' }}
+      sonar_scan: ${{ inputs.sonar_scan || '' }}
+      xray_scan: ${{ inputs.xray_scan || '' }}
+    secrets: inherit
