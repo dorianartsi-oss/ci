@@ -11,8 +11,12 @@
   },
 
   "scan": {
-    "sonar_scan": true,
-    "xray_scan": true
+    "sonar_scan": true
+  },
+
+  "tests": {
+    "fail_on_test_failure": true,
+    "min_coverage": 0
   },
 
   "notify": {
@@ -24,6 +28,7 @@
     "type": "docker",
     "language": "java",
     "builder": "maven",
+    "path": ".",
     "jdk_version": "17",
     "use_buildkit": true,
     "dockerfile": "Dockerfile",
