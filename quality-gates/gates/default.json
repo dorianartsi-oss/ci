@@ -1,0 +1,12 @@
+{
+  "sonar": {
+    "coverage": 80,
+    "duplicated_lines_density": 3,
+    "blocker_violations": 0,
+    "critical_violations": 0
+  },
+  "tests": {
+    "fail_on_test_failure": true,
+    "min_coverage": 80
+  }
+}
