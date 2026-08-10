@@ -18,8 +18,7 @@
     }
   ],
   "scan": {
-    "sonar_scan": true,
-    "xray_scan": true
+    "sonar_scan": true
   },
   "notify": {
     "email": true,
