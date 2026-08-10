@@ -1,1 +1,591 @@
-> # Generic Java + Docker CI pipeline.
+# Generic Java + Docker CI pipeline — native GitHub Actions only.
+#
+# This is the single reusable workflow every microservice in the organization
+# calls. It replaces the Ansible engine end to end:
+#
+#   ci_tasks_runner.yaml + roles/ci_pipeline.yaml -> the jobs below
+#   tasks/pre_build_tasks.yaml                    -> "Clean previous build output"
+#   tasks/clone_repo.yaml                         -> actions/checkout
+#   tasks/jf_cli_config.yaml                      -> setup-jfrog-cli + jf mvn-config
+#   tasks/build_java.yaml                         -> setup-java + jf mvn + smoke test
+#   tasks/docker_build_buildkit.yaml              -> setup-buildx + build-push-action
+#   tasks/set_properties_jfrog.yaml               -> jf rt sp
+#   tasks/summary.yaml                            -> $GITHUB_STEP_SUMMARY
+#   tasks/send_email_ews.yaml                     -> actions/notify-email
+#   create_json_file.py + the sed placeholder wall -> actions/resolve-config
+#   Fetch-Gates job                                -> actions/quality-gates
+#
+# The developer-facing contract is unchanged: a service still owns exactly one
+# build_config.json plus a ~40-line caller workflow. Nothing else.
+#
+# Air-gap note: action refs below are the canonical upstream coordinates. At
+# rollout each one is repointed at its vetted internal mirror under the
+# banking-factory org (actions/checkout@v4 -> banking-factory/actions-checkout@v4,
+# docker/build-push-action@v6 -> banking-factory/build-push-action@v6, and so on).
+# Only the owner segment changes; inputs and pinned major versions stay as-is.
+
+name: Java + Docker CI
+
+on:
+  workflow_call:
+    inputs:
+      service_path:
+        description: Path to the service directory inside the calling repository.
+        type: string
+        required: true
+      runner_label:
+        description: Label of the self-hosted runner pool to execute on.
+        type: string
+        required: false
+        default: private-gcp-runner
+      sonar_scan:
+        description: "'true'/'false' to override scan.sonar_scan; blank uses build_config.json."
+        type: string
+        required: false
+        default: ''
+      gates_repo:
+        description: Repository holding the central quality-gate thresholds.
+        type: string
+        required: false
+        default: banking-factory/quality-gates
+      gates_ref:
+        description: Ref of the quality-gates repository to read.
+        type: string
+        required: false
+        default: main
+      platform_ref:
+        description: Ref of banking-factory/platform-ci supplying the composite actions.
+        type: string
+        required: false
+        default: v1
+      jfrog_cli_download_repo:
+        description: >
+          Artifactory remote repository that mirrors releases.jfrog.io, used to fetch
+          the JFrog CLI without egress. Blank = download from the public internet.
+        type: string
+        required: false
+        default: ''
+
+    secrets:
+      ARTIFACTORY_USERNAME:
+        required: true
+      ARTIFACTORY_TOKEN:
+        required: true
+      ARTIFACTORY_URL:
+        description: Full Artifactory base URL. Derived from registry.host when unset.
+        required: false
+      PLATFORM_REPO_TOKEN:
+        description: Read access to platform-ci and quality-gates. Falls back to GITHUB_TOKEN.
+        required: false
+      SONAR_HOST_URL:
+        required: false
+      SONAR_TOKEN:
+        required: false
+      SMTP_SERVER:
+        required: false
+      SMTP_USERNAME:
+        required: false
+      SMTP_PASSWORD:
+        required: false
+      SMTP_FROM:
+        required: false
+
+    outputs:
+      images:
+        description: Comma-separated list of images this run pushed.
+        value: ${{ jobs.config.outputs.images }}
+      config:
+        description: The effective, fully merged build configuration.
+        value: ${{ jobs.config.outputs.config }}
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  # Reused by every checkout of an internal platform repository.
+  PLATFORM_TOKEN: ${{ secrets.PLATFORM_REPO_TOKEN || github.token }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Resolve the effective configuration once, then fan out over projects[].
+  # ---------------------------------------------------------------------------
+  config:
+    name: Resolve config
+    runs-on: ${{ inputs.runner_label }}
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+      config: ${{ steps.resolve.outputs.config }}
+      cmdb_code: ${{ steps.resolve.outputs.cmdb_code }}
+      sonar_scan: ${{ steps.resolve.outputs.sonar_scan }}
+      min_coverage: ${{ steps.resolve.outputs.min_coverage }}
+      fail_on_test_failure: ${{ steps.resolve.outputs.fail_on_test_failure }}
+      notify_email: ${{ steps.resolve.outputs.notify_email }}
+      recipients: ${{ steps.resolve.outputs.recipients }}
+      registry_host: ${{ steps.resolve.outputs.registry_host }}
+      docker_repo: ${{ steps.resolve.outputs.docker_repo }}
+      maven_repo: ${{ steps.resolve.outputs.maven_repo }}
+      images: ${{ steps.resolve.outputs.images }}
+      gates_source: ${{ steps.gates.outputs.source }}
+      started_at: ${{ steps.clock.outputs.epoch }}
+
+    steps:
+      - name: Record start time
+        id: clock
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+          echo "started=$(TZ=Asia/Jerusalem date '+%Y-%m-%d %H:%M:%S %Z')" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the service repository
+        uses: actions/checkout@v4
+        with:
+          path: service
+          fetch-depth: 1
+
+      - name: Check out the platform actions
+        uses: actions/checkout@v4
+        with:
+          repository: banking-factory/platform-ci
+          ref: ${{ inputs.platform_ref }}
+          token: ${{ env.PLATFORM_TOKEN }}
+          path: .platform-ci
+          fetch-depth: 1
+
+      - name: Locate build_config.json
+        id: cfg
+        shell: bash
+        env:
+          SERVICE_PATH: ${{ inputs.service_path }}
+        run: |
+          set -euo pipefail
+          file="service/${SERVICE_PATH%/}/build_config.json"
+          if [[ ! -f "$file" ]]; then
+            echo "::error::$file not found. Every service must ship a build_config.json."
+            exit 1
+          fi
+          jq empty "$file" || { echo "::error::$file is not valid JSON"; exit 1; }
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "cmdb_code=$(jq -r '.cmdb_code // "unknown"' "$file")" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve quality gates
+        id: gates
+        uses: ./.platform-ci/actions/quality-gates
+        with:
+          cmdb_code: ${{ steps.cfg.outputs.cmdb_code }}
+          gates_repo: ${{ inputs.gates_repo }}
+          gates_ref: ${{ inputs.gates_ref }}
+          token: ${{ env.PLATFORM_TOKEN }}
+
+      - name: Merge configuration
+        id: resolve
+        uses: ./.platform-ci/actions/resolve-config
+        with:
+          config_file: ${{ steps.cfg.outputs.file }}
+          gates_json: ${{ steps.gates.outputs.gates_json }}
+          sonar_scan: ${{ inputs.sonar_scan }}
+
+  # ---------------------------------------------------------------------------
+  # One build per entry in projects[].
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.name }}
+    needs: config
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.config.outputs.matrix) }}
+
+    env:
+      SERVICE_DIR: service/${{ inputs.service_path }}
+      PROJECT_DIR: service/${{ inputs.service_path }}/${{ matrix.path }}
+      IMAGE_REF: ${{ matrix.image_base }}:${{ github.run_number }}
+      JF_URL: ${{ secrets.ARTIFACTORY_URL || format('https://{0}/artifactory', needs.config.outputs.registry_host) }}
+      JFROG_CLI_BUILD_NAME: ${{ inputs.service_path }}-${{ matrix.name }}
+      JFROG_CLI_BUILD_NUMBER: ${{ github.run_number }}
+      MAVEN_LOG: ${{ runner.temp }}/maven_build_output.txt
+
+    steps:
+      # --- pre_build_tasks.yaml -------------------------------------------------
+      - name: Check out the service repository
+        uses: actions/checkout@v4
+        with:
+          path: service
+          # Full history so SonarQube can attribute issues to authors.
+          fetch-depth: 0
+
+      - name: Check out the platform actions
+        uses: actions/checkout@v4
+        with:
+          repository: banking-factory/platform-ci
+          ref: ${{ inputs.platform_ref }}
+          token: ${{ env.PLATFORM_TOKEN }}
+          path: .platform-ci
+          fetch-depth: 1
+
+      - name: Clean previous build output
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Self-hosted runners keep their workspace between runs; the Ansible
+          # engine wiped stale output for the same reason. The Maven cache is
+          # deliberately left alone — that is what makes the air-gapped build fast.
+          rm -rf "$PROJECT_DIR/target"
+          rm -f "$MAVEN_LOG"
+
+      - name: Validate project layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -d "$PROJECT_DIR" ]] || { echo "::error::Project directory $PROJECT_DIR does not exist"; exit 1; }
+          [[ -f "$PROJECT_DIR/pom.xml" ]] || { echo "::error::No pom.xml in $PROJECT_DIR"; exit 1; }
+
+      # --- build_java.yaml ------------------------------------------------------
+      - name: Set up JDK ${{ matrix.jdk_version }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk_version }}
+          # Caches ~/.m2/repository on the persistent GCP host, keyed on the poms.
+          # Repository resolution and credentials are NOT configured here: the
+          # `jf mvn-config` step below owns them, so there is exactly one place
+          # that decides where dependencies come from.
+          cache: maven
+
+      - name: Set up the JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          JF_URL: ${{ env.JF_URL }}
+          JF_USER: ${{ secrets.ARTIFACTORY_USERNAME }}
+          JF_PASSWORD: ${{ secrets.ARTIFACTORY_TOKEN }}
+        with:
+          download-repository: ${{ inputs.jfrog_cli_download_repo }}
+
+      - name: Point Maven resolution at Artifactory
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        env:
+          MAVEN_REPO: ${{ needs.config.outputs.maven_repo }}
+        run: |
+          set -euo pipefail
+          # Replaces jf_cli_config.yaml. Writes .jfrog/projects/maven.yaml, which
+          # makes `jf mvn` resolve through the bank's virtual repository and record
+          # every downloaded dependency into the build-info manifest.
+          jf mvn-config \
+            --repo-resolve-releases "$MAVEN_REPO" \
+            --repo-resolve-snapshots "$MAVEN_REPO"
+
+      - name: Build with Maven
+        id: mvn
+        timeout-minutes: 120
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        env:
+          MAVEN_ARGS_IN: ${{ matrix.maven_args }}
+          FAIL_ON_TEST_FAILURE: ${{ needs.config.outputs.fail_on_test_failure }}
+        run: |
+          set -euo pipefail
+          args="$MAVEN_ARGS_IN"
+          if [[ "$FAIL_ON_TEST_FAILURE" != "true" ]]; then
+            # The gate file allows a soft build; surface the failures but keep going.
+            args="$args -Dmaven.test.failure.ignore=true"
+          fi
+          echo "Running: jf mvn $args"
+          set +e
+          jf mvn $args 2>&1 | tee "$MAVEN_LOG"
+          status=${PIPESTATUS[0]}
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Diagnose unresolved dependencies
+        # The single most useful failure message in an air-gapped VPC: exactly which
+        # artifacts Maven asked Artifactory for and never received. This is the
+        # inline Python regex parser from build_java.yaml, rewritten in coreutils.
+        if: failure() && steps.mvn.outcome == 'failure'
+        shell: bash
+        run: |
+          set -uo pipefail
+          [[ -f "$MAVEN_LOG" ]] || exit 0
+          tmp=$(mktemp -d)
+          grep -E 'Downloading from ' "$MAVEN_LOG" | grep -oE 'https?://[^ ]+' | sort -u > "$tmp/requested"
+          grep -E 'Downloaded from '  "$MAVEN_LOG" | grep -oE 'https?://[^ ]+' | sort -u > "$tmp/received"
+          missing=$(comm -23 "$tmp/requested" "$tmp/received")
+          {
+            echo "### Unresolved dependencies"
+            if [[ -z "$missing" ]]; then
+              echo
+              echo "Every requested artifact was served. The failure is in compilation or tests, not the network."
+            else
+              echo
+              echo "Artifactory did not serve these artifacts:"
+              echo '```'
+              echo "$missing"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [[ -n "$missing" ]] && { echo "::error::Artifactory did not serve $(wc -l <<<"$missing") artifact(s); see the job summary."; }
+          rm -rf "$tmp"
+          exit 0
+
+      - name: Stage the application jar
+        id: jar
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The Dockerfile contract is a fixed path: COPY target/app.jar app.jar.
+          # Find the Spring Boot fat jar and normalize its name, exactly as the
+          # Ansible role did, so no service has to hardcode its version.
+          mapfile -t jars < <(find target -maxdepth 1 -name '*.jar' \
+            ! -name '*-sources.jar' ! -name '*-javadoc.jar' ! -name 'app.jar' \
+            -printf '%s\t%p\n' | sort -rn | cut -f2)
+          if [[ ${#jars[@]} -eq 0 ]]; then
+            echo "::error::No jar produced in $PROJECT_DIR/target"
+            exit 1
+          fi
+          # Largest jar wins: the repackaged executable jar always dominates the
+          # thin original-*.jar Spring Boot leaves beside it.
+          cp "${jars[0]}" target/app.jar
+          echo "Staged ${jars[0]} -> target/app.jar"
+          echo "source=${jars[0]}" >> "$GITHUB_OUTPUT"
+          echo "size=$(du -h target/app.jar | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test the jar
+        if: matrix.smoke_test
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        env:
+          SECONDS_TO_LIVE: ${{ matrix.smoke_test_seconds }}
+        run: |
+          set -uo pipefail
+          # Boot the artifact and require it to still be alive when the timer runs
+          # out. `timeout` reports 124 when it had to kill a healthy process, so 124
+          # is the success case here; a clean 0 means the app exited on its own,
+          # which for a long-running service is a failure.
+          timeout "$SECONDS_TO_LIVE" java -jar target/app.jar > "$RUNNER_TEMP/smoke.log" 2>&1
+          rc=$?
+          case "$rc" in
+            124) echo "Application stayed up for ${SECONDS_TO_LIVE}s." ;;
+            0)   echo "::error::Application exited on its own within ${SECONDS_TO_LIVE}s."
+                 tail -50 "$RUNNER_TEMP/smoke.log"; exit 1 ;;
+            *)   echo "::error::Application crashed during smoke test (exit $rc)."
+                 tail -50 "$RUNNER_TEMP/smoke.log"; exit 1 ;;
+          esac
+
+      # --- quality gates --------------------------------------------------------
+      - name: Enforce the coverage gate
+        id: coverage
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        env:
+          MIN_COVERAGE: ${{ needs.config.outputs.min_coverage }}
+        run: |
+          set -euo pipefail
+          report=target/site/jacoco/jacoco.xml
+          if [[ ! -f "$report" ]]; then
+            echo "::warning::No JaCoCo report at $report; coverage gate skipped. Add the jacoco-maven-plugin to enforce it."
+            echo "percent=n/a" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The report-level LINE counter is the last one in the document.
+          counter=$(grep -o '<counter type="LINE"[^/]*/>' "$report" | tail -1)
+          missed=$(sed -n 's/.*missed="\([0-9]*\)".*/\1/p' <<<"$counter")
+          covered=$(sed -n 's/.*covered="\([0-9]*\)".*/\1/p' <<<"$counter")
+          total=$(( missed + covered ))
+          if [[ "$total" -eq 0 ]]; then
+            echo "::warning::JaCoCo reported no instrumented lines; coverage gate skipped."
+            echo "percent=n/a" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          pct=$(awk -v c="$covered" -v t="$total" 'BEGIN { printf "%.2f", (c * 100) / t }')
+          echo "percent=$pct" >> "$GITHUB_OUTPUT"
+          echo "Line coverage: ${pct}% (gate: ${MIN_COVERAGE}%)"
+          awk -v p="$pct" -v m="$MIN_COVERAGE" 'BEGIN { exit (p + 0 >= m + 0) ? 0 : 1 }' || {
+            echo "::error::Line coverage ${pct}% is below the ${MIN_COVERAGE}% gate for this CMDB code."
+            exit 1
+          }
+
+      - name: SonarQube analysis
+        if: needs.config.outputs.sonar_scan == 'true'
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          PROJECT_KEY: ${{ needs.config.outputs.cmdb_code }}-${{ matrix.name }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SONAR_HOST_URL:-}" || -z "${SONAR_TOKEN:-}" ]]; then
+            echo "::error::scan.sonar_scan is true but SONAR_HOST_URL/SONAR_TOKEN are not set."
+            exit 1
+          fi
+          # Run the analyzer through the same Maven that just built, so it reuses the
+          # compiled classes and the JaCoCo report rather than recompiling. The
+          # blocker/critical/duplication thresholds from the gates repo live in the
+          # server-side Quality Gate; -Dsonar.qualitygate.wait makes this step block
+          # on that verdict and fail the build when the gate is red.
+          jf mvn sonar:sonar \
+            -Dsonar.host.url="$SONAR_HOST_URL" \
+            -Dsonar.token="$SONAR_TOKEN" \
+            -Dsonar.projectKey="$PROJECT_KEY" \
+            -Dsonar.projectName="$PROJECT_KEY" \
+            -Dsonar.qualitygate.wait=true \
+            -Dsonar.scm.revision="$GITHUB_SHA"
+
+      # --- docker_build_buildkit.yaml ------------------------------------------
+      - name: Set up Buildx
+        if: matrix.use_buildkit
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Artifactory
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ needs.config.outputs.registry_host }}
+          username: ${{ secrets.ARTIFACTORY_USERNAME }}
+          password: ${{ secrets.ARTIFACTORY_TOKEN }}
+
+      - name: Build and push the image
+        if: matrix.use_buildkit
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.PROJECT_DIR }}/${{ matrix.docker_context }}
+          file: ${{ env.PROJECT_DIR }}/${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: |
+            ${{ matrix.image_base }}:${{ github.run_number }}
+            ${{ matrix.image_base }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            io.corporate.cmdb-code=${{ needs.config.outputs.cmdb_code }}
+            io.corporate.build-number=${{ github.run_number }}
+
+      - name: Build and push the image (no BuildKit)
+        if: ${{ !matrix.use_buildkit }}
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            -f "${{ matrix.dockerfile }}" \
+            -t "${{ matrix.image_base }}:${{ github.run_number }}" \
+            -t "${{ matrix.image_base }}:${{ github.sha }}" \
+            "${{ matrix.docker_context }}"
+          docker push "${{ matrix.image_base }}:${{ github.run_number }}"
+          docker push "${{ matrix.image_base }}:${{ github.sha }}"
+
+      - name: Publish build info
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ties the dependency manifest recorded by `jf mvn` to this GHA run, so
+          # Artifactory can answer "which commit produced this image" without GitHub.
+          jf rt build-collect-env || true
+          # Absolute path to the checkout root: the project may sit several levels
+          # down, so a relative ".." would miss the .git directory.
+          jf rt build-add-git "$GITHUB_WORKSPACE/service" || true
+          jf rt build-publish
+
+      # --- set_properties_jfrog.yaml -------------------------------------------
+      - name: Stamp audit properties on the image
+        if: always() && steps.jar.outcome == 'success'
+        shell: bash
+        env:
+          DOCKER_REPO: ${{ needs.config.outputs.docker_repo }}
+          IMAGE_NAME: ${{ matrix.docker_image_name }}
+          SONAR_SCAN: ${{ needs.config.outputs.sonar_scan }}
+          CMDB_CODE: ${{ needs.config.outputs.cmdb_code }}
+        run: |
+          set -euo pipefail
+          # These properties are the gatekeeper the CD pipelines read before they
+          # will promote an image out of the build repository.
+          props="cmdb_code=${CMDB_CODE}"
+          props="${props};scan.sonar_scan=${SONAR_SCAN}"
+          props="${props};git_commit_hash=${GITHUB_SHA}"
+          props="${props};git_branch=${GITHUB_REF_NAME}"
+          props="${props};build_timestamp=$(TZ=Asia/Jerusalem date '+%Y-%m-%dT%H:%M:%S%z')"
+          props="${props};build_name=${JFROG_CLI_BUILD_NAME}"
+          props="${props};build_number=${JFROG_CLI_BUILD_NUMBER}"
+          props="${props};ci_run_id=${GITHUB_RUN_ID}"
+          props="${props};triggered_by=${GITHUB_ACTOR}"
+          jf rt set-props "${DOCKER_REPO}/${IMAGE_NAME}/${GITHUB_RUN_NUMBER}/*" "$props"
+
+      # --- summary.yaml ---------------------------------------------------------
+      - name: Write the build summary
+        if: always()
+        shell: bash
+        env:
+          RESULT: ${{ job.status }}
+          JAR_SOURCE: ${{ steps.jar.outputs.source }}
+          JAR_SIZE: ${{ steps.jar.outputs.size }}
+          COVERAGE: ${{ steps.coverage.outputs.percent }}
+          SONAR_SCAN: ${{ needs.config.outputs.sonar_scan }}
+          GATES_SOURCE: ${{ needs.config.outputs.gates_source }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## ${{ matrix.name }} — ${RESULT}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Image | \`${IMAGE_REF}\` |"
+            echo "| Jar | \`${JAR_SOURCE:-not produced}\` (${JAR_SIZE:-—}) |"
+            echo "| JDK | ${{ matrix.jdk_version }} |"
+            echo "| Line coverage | ${COVERAGE:-n/a} |"
+            echo "| SonarQube | ${SONAR_SCAN} |"
+            echo "| Quality gates | \`${GATES_SOURCE}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Build info | ${JFROG_CLI_BUILD_NAME} / ${JFROG_CLI_BUILD_NUMBER} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # send_email_ews.yaml — always block.
+  # ---------------------------------------------------------------------------
+  notify:
+    name: Notify
+    needs: [config, build]
+    if: always() && needs.config.outputs.notify_email == 'true'
+    runs-on: ${{ inputs.runner_label }}
+    env:
+      # The `secrets` context is not available in a step-level `if`, so the
+      # "is email configured at all?" test has to read it through `env`.
+      SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+    steps:
+      - name: Check out the platform actions
+        uses: actions/checkout@v4
+        with:
+          repository: banking-factory/platform-ci
+          ref: ${{ inputs.platform_ref }}
+          token: ${{ env.PLATFORM_TOKEN }}
+          path: .platform-ci
+          fetch-depth: 1
+
+      - name: Measure the run
+        id: duration
+        shell: bash
+        env:
+          STARTED_AT: ${{ needs.config.outputs.started_at }}
+        run: |
+          set -euo pipefail
+          elapsed=$(( $(date +%s) - STARTED_AT ))
+          printf 'text=%dm %02ds\n' $(( elapsed / 60 )) $(( elapsed % 60 )) >> "$GITHUB_OUTPUT"
+
+      - name: Send the build report
+        if: env.SMTP_SERVER != ''
+        uses: ./.platform-ci/actions/notify-email
+        with:
+          smtp_server: ${{ secrets.SMTP_SERVER }}
+          smtp_username: ${{ secrets.SMTP_USERNAME }}
+          smtp_password: ${{ secrets.SMTP_PASSWORD }}
+          from_address: ${{ secrets.SMTP_FROM || 'ci-pipeline@corporate.io' }}
+          recipients: ${{ needs.config.outputs.recipients }}
+          status: ${{ needs.build.result }}
+          service: ${{ inputs.service_path }}
+          image: ${{ needs.config.outputs.images }}
+          duration: ${{ steps.duration.outputs.text }}
