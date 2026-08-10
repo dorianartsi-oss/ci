@@ -22,10 +22,6 @@ inputs:
     description: "'true'/'false' to override scan.sonar_scan; blank to use the config"
     required: false
     default: ''
-  xray_scan:
-    description: "'true'/'false' to override scan.xray_scan; blank to use the config"
-    required: false
-    default: ''
 
 outputs:
   matrix:
@@ -40,9 +36,15 @@ outputs:
   sonar_scan:
     value: ${{ steps.merge.outputs.sonar_scan }}
     description: Effective SonarQube toggle
-  xray_scan:
-    value: ${{ steps.merge.outputs.xray_scan }}
-    description: Effective Xray toggle
+  images:
+    value: ${{ steps.merge.outputs.images }}
+    description: Comma-separated image references this run will push
+  min_coverage:
+    value: ${{ steps.merge.outputs.min_coverage }}
+    description: Line-coverage percentage the build must reach
+  fail_on_test_failure:
+    value: ${{ steps.merge.outputs.fail_on_test_failure }}
+    description: Whether a failing unit test fails the build
   notify_email:
     value: ${{ steps.merge.outputs.notify_email }}
     description: Effective email-notification toggle
@@ -70,7 +72,6 @@ runs:
         DEFAULTS_IN: ${{ inputs.defaults_file }}
         GATES_JSON: ${{ inputs.gates_json }}
         SONAR_OVERRIDE: ${{ inputs.sonar_scan }}
-        XRAY_OVERRIDE: ${{ inputs.xray_scan }}
       run: |
         set -euo pipefail
 
@@ -104,9 +105,6 @@ runs:
         if [[ -n "$SONAR_OVERRIDE" ]]; then
           merged=$(jq --argjson v "$SONAR_OVERRIDE" '.scan.sonar_scan = $v' <<<"$merged")
         fi
-        if [[ -n "$XRAY_OVERRIDE" ]]; then
-          merged=$(jq --argjson v "$XRAY_OVERRIDE" '.scan.xray_scan = $v' <<<"$merged")
-        fi
 
         count=$(jq '.projects | length' <<<"$merged")
         if [[ "$count" -eq 0 ]]; then
@@ -123,20 +121,34 @@ runs:
           exit 1
         fi
 
-        matrix=$(jq -c '{include: [ .projects[] | {
-          name, type, language, builder,
-          jdk_version: (.jdk_version | tostring),
-          use_buildkit, docker_image_name, dockerfile, docker_context,
-          maven_args, smoke_test,
-          smoke_test_seconds: (.smoke_test_seconds | tonumber)
-        } ]}' <<<"$merged")
+        # image_base is resolved here rather than in the workflow so that the
+        # registry layout lives in exactly one place. A blank docker_repo is
+        # allowed: some virtual registries map the repository into the hostname.
+        matrix=$(jq -c '
+          .registry as $r
+          | ($r.host + (if ($r.docker_repo // "") == "" then "" else "/" + $r.docker_repo end)) as $prefix
+          | {include: [ .projects[] | {
+              name, type, language, builder,
+              path: (.path // "."),
+              jdk_version: (.jdk_version | tostring),
+              use_buildkit, docker_image_name, dockerfile, docker_context,
+              maven_args, smoke_test,
+              smoke_test_seconds: (.smoke_test_seconds | tonumber),
+              image_base: ($prefix + "/" + .docker_image_name)
+            } ]}
+        ' <<<"$merged")
+
+        images=$(jq -r --arg n "${GITHUB_RUN_NUMBER:-0}" \
+          '[ .include[] | .image_base + ":" + $n ] | join(",")' <<<"$matrix")
 
         {
           echo "matrix=$matrix"
+          echo "images=$images"
           echo "config=$(jq -c . <<<"$merged")"
           echo "cmdb_code=$(jq -r '.cmdb_code' <<<"$merged")"
           echo "sonar_scan=$(jq -r '.scan.sonar_scan' <<<"$merged")"
-          echo "xray_scan=$(jq -r '.scan.xray_scan' <<<"$merged")"
+          echo "min_coverage=$(jq -r '.tests.min_coverage // 0' <<<"$merged")"
+          echo "fail_on_test_failure=$(jq -r '.tests.fail_on_test_failure // true' <<<"$merged")"
           echo "notify_email=$(jq -r '.notify.email' <<<"$merged")"
           echo "recipients=$(jq -r '(.notify.recipients // []) + [.owner_email // ""] | map(select(. != "")) | unique | join(",")' <<<"$merged")"
           echo "registry_host=$(jq -r '.registry.host' <<<"$merged")"
@@ -150,6 +162,3 @@ runs:
         echo '```' >> "$GITHUB_STEP_SUMMARY"
 
         rm -f "$gates_file"
-
-
-
