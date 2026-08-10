@@ -1,0 +1,42 @@
+# TEMPLATE — copy to <service-name>.yml, replace every SERVICE_NAME, delete this line.
+# Do not enable this file as-is; the leading underscore keeps it inert only by convention,
+# so GitHub WILL still parse it. Rename on copy rather than editing in place.
+name: CI / SERVICE_NAME
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'SERVICE_NAME/**'
+      - '.github/workflows/SERVICE_NAME.yml'
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        type: string
+        default: private-gcp-runner
+      sonar_scan:
+        type: choice
+        options: ['', 'true', 'false']
+        default: ''
+      xray_scan:
+        type: choice
+        options: ['', 'true', 'false']
+        default: ''
+
+concurrency:
+  group: ci-SERVICE_NAME-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  ci:
+    uses: banking-factory/platform-ci/.github/workflows/java-docker-ci.yml@v1
+    with:
+      service_path: SERVICE_NAME
+      runner_label: ${{ inputs.runner_label || 'private-gcp-runner' }}
+      sonar_scan: ${{ inputs.sonar_scan || '' }}
+      xray_scan: ${{ inputs.xray_scan || '' }}
+    secrets: inherit
