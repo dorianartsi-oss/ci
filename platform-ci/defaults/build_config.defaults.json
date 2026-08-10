@@ -1,0 +1,37 @@
+{
+  "_comment": "Org-wide defaults. Deep-merged UNDER the service's build_config.json, so anything here is overridable per service. 'project_defaults' is applied to every element of projects[].",
+
+  "cmdb_code": "unknown",
+  "owner_email": "",
+
+  "registry": {
+    "host": "artifactory.corporate.io",
+    "docker_repo": "docker-local",
+    "maven_repo": "maven-virtual-registry"
+  },
+
+  "scan": {
+    "sonar_scan": true,
+    "xray_scan": true
+  },
+
+  "notify": {
+    "email": true,
+    "recipients": []
+  },
+
+  "project_defaults": {
+    "type": "docker",
+    "language": "java",
+    "builder": "maven",
+    "jdk_version": "17",
+    "use_buildkit": true,
+    "dockerfile": "Dockerfile",
+    "docker_context": ".",
+    "maven_args": "-B clean install -DskipTests=false -e",
+    "smoke_test": true,
+    "smoke_test_seconds": 10
+  },
+
+  "projects": []
+}
