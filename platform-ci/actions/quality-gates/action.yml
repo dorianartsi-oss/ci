@@ -16,9 +16,16 @@ inputs:
     description: Ref of the gates repo to read
     required: false
     default: main
+  gates_path:
+    description: >
+      Workspace-relative directory containing gates/*.json. When set, that directory
+      is read directly and gates_repo is not cloned.
+    required: false
+    default: ''
   token:
     description: Token with read access to the gates repo
-    required: true
+    required: false
+    default: ''
 
 outputs:
   gates_json:
@@ -32,6 +39,7 @@ runs:
   using: composite
   steps:
     - name: Checkout gates repo
+      if: inputs.gates_path == ''
       uses: actions/checkout@v4
       with:
         repository: ${{ inputs.gates_repo }}
@@ -43,9 +51,15 @@ runs:
     - name: Resolve thresholds
       id: resolve
       shell: bash
+      env:
+        GATES_PATH: ${{ inputs.gates_path }}
       run: |
         set -euo pipefail
-        root=".quality-gates/gates"
+        root="${GATES_PATH:-.quality-gates/gates}"
+        if [[ ! -d "$root" ]]; then
+          echo "::error::Gates directory $root does not exist"
+          exit 1
+        fi
         candidate="$root/${{ inputs.cmdb_code }}.json"
         if [[ -f "$candidate" ]]; then
           source_file="$candidate"
@@ -65,6 +79,6 @@ runs:
         jq . "$source_file"
 
     - name: Clean up gates checkout
-      if: always()
+      if: always() && inputs.gates_path == ''
       shell: bash
       run: rm -rf .quality-gates

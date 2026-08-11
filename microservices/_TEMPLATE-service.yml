@@ -1,24 +1,31 @@
-# Copy to <service-name>.yml and replace every SERVICE_NAME. GitHub still parses this
-# file in place, so rename on copy rather than editing it here.
+# Copy to /.github/workflows/SERVICE_NAME.yml (repo root — GitHub only discovers
+# workflows there) and replace every SERVICE_NAME. Kept outside .github/workflows
+# so GitHub does not try to run the template itself.
 name: CI / SERVICE_NAME
 
 on:
   push:
     branches: [main, master]
     paths:
-      - 'SERVICE_NAME/**'
+      - 'microservices/SERVICE_NAME/**'
+      - 'platform-ci/**'
+      - 'quality-gates/**'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/SERVICE_NAME.yml'
   pull_request:
     branches: [main, master]
     paths:
-      - 'SERVICE_NAME/**'
+      - 'microservices/SERVICE_NAME/**'
+      - 'platform-ci/**'
+      - 'quality-gates/**'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/SERVICE_NAME.yml'
   workflow_dispatch:
     inputs:
       runner_label:
-        description: Self-hosted runner label
+        description: Runner label (ubuntu-latest until private-gcp-runner is attached)
         type: string
-        default: private-gcp-runner
+        default: ubuntu-latest
       sonar_scan:
         description: Override SonarQube scan (blank = use build_config.json)
         type: choice
@@ -35,9 +42,10 @@ permissions:
 
 jobs:
   ci:
-    uses: banking-factory/platform-ci/.github/workflows/ci.yml@v1
+    uses: ./.github/workflows/ci.yml
     with:
-      service_path: SERVICE_NAME
-      runner_label: ${{ inputs.runner_label || 'private-gcp-runner' }}
+      service_path: microservices/SERVICE_NAME
+      gates_path: service/quality-gates/gates
+      runner_label: ${{ inputs.runner_label || 'ubuntu-latest' }}
       sonar_scan: ${{ inputs.sonar_scan || '' }}
     secrets: inherit

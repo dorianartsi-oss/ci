@@ -27,6 +27,13 @@ on:
         type: string
         required: false
         default: main
+      gates_path:
+        description: >
+          Workspace-relative directory holding gates/*.json. When set, the gates
+          repository is read locally instead of being cloned from gates_repo.
+        type: string
+        required: false
+        default: ''
       platform_ref:
         description: Ref of banking-factory/platform-ci supplying the composite actions.
         type: string
@@ -42,9 +49,11 @@ on:
 
     secrets:
       ARTIFACTORY_USERNAME:
-        required: true
+        description: Required in the banking-factory org. Optional here so the run reaches the JFrog steps instead of failing validation.
+        required: false
       ARTIFACTORY_TOKEN:
-        required: true
+        description: Required in the banking-factory org. Optional here so the run reaches the JFrog steps instead of failing validation.
+        required: false
       ARTIFACTORY_URL:
         description: Full Artifactory base URL. Derived from registry.host when unset.
         required: false
@@ -112,15 +121,6 @@ jobs:
           path: service
           fetch-depth: 1
 
-      - name: Check out the platform actions
-        uses: actions/checkout@v4
-        with:
-          repository: banking-factory/platform-ci
-          ref: ${{ inputs.platform_ref }}
-          token: ${{ env.PLATFORM_TOKEN }}
-          path: .platform-ci
-          fetch-depth: 1
-
       - name: Locate build_config.json
         id: cfg
         shell: bash
@@ -139,16 +139,17 @@ jobs:
 
       - name: Resolve quality gates
         id: gates
-        uses: ./.platform-ci/actions/quality-gates
+        uses: ./service/platform-ci/actions/quality-gates
         with:
           cmdb_code: ${{ steps.cfg.outputs.cmdb_code }}
           gates_repo: ${{ inputs.gates_repo }}
           gates_ref: ${{ inputs.gates_ref }}
+          gates_path: ${{ inputs.gates_path }}
           token: ${{ env.PLATFORM_TOKEN }}
 
       - name: Merge configuration
         id: resolve
-        uses: ./.platform-ci/actions/resolve-config
+        uses: ./service/platform-ci/actions/resolve-config
         with:
           config_file: ${{ steps.cfg.outputs.file }}
           gates_json: ${{ steps.gates.outputs.gates_json }}
@@ -178,15 +179,6 @@ jobs:
         with:
           path: service
           fetch-depth: 0
-
-      - name: Check out the platform actions
-        uses: actions/checkout@v4
-        with:
-          repository: banking-factory/platform-ci
-          ref: ${{ inputs.platform_ref }}
-          token: ${{ env.PLATFORM_TOKEN }}
-          path: .platform-ci
-          fetch-depth: 1
 
       - name: Clean previous build output
         shell: bash
@@ -486,13 +478,10 @@ jobs:
       PLATFORM_TOKEN: ${{ secrets.PLATFORM_REPO_TOKEN || github.token }}
       SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
     steps:
-      - name: Check out the platform actions
+      - name: Check out the service repository
         uses: actions/checkout@v4
         with:
-          repository: banking-factory/platform-ci
-          ref: ${{ inputs.platform_ref }}
-          token: ${{ env.PLATFORM_TOKEN }}
-          path: .platform-ci
+          path: service
           fetch-depth: 1
 
       - name: Measure the run
@@ -507,7 +496,7 @@ jobs:
 
       - name: Send the build report
         if: env.SMTP_SERVER != ''
-        uses: ./.platform-ci/actions/notify-email
+        uses: ./service/platform-ci/actions/notify-email
         with:
           smtp_server: ${{ secrets.SMTP_SERVER }}
           smtp_username: ${{ secrets.SMTP_USERNAME }}

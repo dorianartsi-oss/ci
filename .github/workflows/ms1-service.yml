@@ -4,19 +4,25 @@ on:
   push:
     branches: [main, master]
     paths:
-      - 'ms1/**'
+      - 'microservices/ms1/**'
+      - 'platform-ci/**'
+      - 'quality-gates/**'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/ms1-service.yml'
   pull_request:
     branches: [main, master]
     paths:
-      - 'ms1/**'
+      - 'microservices/ms1/**'
+      - 'platform-ci/**'
+      - 'quality-gates/**'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/ms1-service.yml'
   workflow_dispatch:
     inputs:
       runner_label:
-        description: Self-hosted runner label
+        description: Runner label (ubuntu-latest until private-gcp-runner is attached)
         type: string
-        default: private-gcp-runner
+        default: ubuntu-latest
       sonar_scan:
         description: Override SonarQube scan (blank = use build_config.json)
         type: choice
@@ -33,9 +39,10 @@ permissions:
 
 jobs:
   ci:
-    uses: banking-factory/platform-ci/.github/workflows/ci.yml@v1
+    uses: ./.github/workflows/ci.yml
     with:
-      service_path: ms1
-      runner_label: ${{ inputs.runner_label || 'private-gcp-runner' }}
+      service_path: microservices/ms1
+      gates_path: service/quality-gates/gates
+      runner_label: ${{ inputs.runner_label || 'ubuntu-latest' }}
       sonar_scan: ${{ inputs.sonar_scan || '' }}
     secrets: inherit
