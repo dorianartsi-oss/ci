@@ -2,8 +2,8 @@ name: Resolve build config
 description: >
   Deep-merges org defaults, the service's build_config.json, the central quality
   gates, and any workflow_dispatch overrides into a single effective config, and
-  emits a build matrix over projects[]. Precedence runs lowest to highest in that
-  order, so central gates win and a team cannot lower a threshold set for it.
+  emits the resolved project as flat outputs. Precedence runs lowest to highest in
+  that order, so central gates win and a team cannot lower a threshold set for it.
 
 inputs:
   config_file:
@@ -23,15 +23,51 @@ inputs:
     default: ''
 
 outputs:
-  matrix:
-    description: '{"include":[...]} — one entry per element of projects[]'
-    value: ${{ steps.merge.outputs.matrix }}
   config:
     description: The full effective config as compact JSON
     value: ${{ steps.merge.outputs.config }}
   cmdb_code:
     value: ${{ steps.merge.outputs.cmdb_code }}
     description: Resolved CMDB code
+  project_name:
+    value: ${{ steps.merge.outputs.project_name }}
+    description: The project's name
+  project_path:
+    value: ${{ steps.merge.outputs.project_path }}
+    description: Directory containing the project, relative to the service root
+  jdk_version:
+    value: ${{ steps.merge.outputs.jdk_version }}
+    description: JDK version to build with
+  use_buildkit:
+    value: ${{ steps.merge.outputs.use_buildkit }}
+    description: Whether the image is built with BuildKit
+  docker_image_name:
+    value: ${{ steps.merge.outputs.docker_image_name }}
+    description: Image name inside the Docker repository
+  dockerfile:
+    value: ${{ steps.merge.outputs.dockerfile }}
+    description: Dockerfile path, relative to the project directory
+  docker_context:
+    value: ${{ steps.merge.outputs.docker_context }}
+    description: Docker build context, relative to the project directory
+  maven_args:
+    value: ${{ steps.merge.outputs.maven_args }}
+    description: Arguments passed to jf mvn
+  smoke_test:
+    value: ${{ steps.merge.outputs.smoke_test }}
+    description: Whether to smoke-test the built jar
+  smoke_test_seconds:
+    value: ${{ steps.merge.outputs.smoke_test_seconds }}
+    description: How long the smoke test must keep the app alive
+  configs_files_to_copy:
+    value: ${{ steps.merge.outputs.configs_files_to_copy }}
+    description: JSON array of config files to copy into the build context
+  image_base:
+    value: ${{ steps.merge.outputs.image_base }}
+    description: Fully qualified image name without a tag
+  images:
+    value: ${{ steps.merge.outputs.images }}
+    description: image_base tagged with this run's number
   sonar_scan:
     value: ${{ steps.merge.outputs.sonar_scan }}
     description: Effective SonarQube toggle
@@ -53,9 +89,6 @@ outputs:
   port_blueprint:
     value: ${{ steps.merge.outputs.port_blueprint }}
     description: Port.io blueprint identifier
-  images:
-    value: ${{ steps.merge.outputs.images }}
-    description: Comma-separated image references this run will push
   fail_on_test_failure:
     value: ${{ steps.merge.outputs.fail_on_test_failure }}
     description: Whether a failing unit test fails the build
@@ -103,37 +136,30 @@ runs:
         [[ -s "$gates_file" ]] || printf '{}' > "$gates_file"
         jq empty "$gates_file" || { echo "::error::gates_json is not valid JSON"; exit 1; }
 
+        # A plain object merges field-by-field through this same '*' operator, so
+        # 'project' needs no separate defaulting pass the way an array of projects
+        # once did.
         merged=$(jq -s '.[0] * .[1] * .[2]' "$defaults" "$CONFIG_FILE" "$gates_file")
-
-        merged=$(jq '
-          (.project_defaults // {}) as $pd
-          | .projects |= map($pd * .)
-          | del(.project_defaults, ._comment)
-        ' <<<"$merged")
+        merged=$(jq 'del(._comment)' <<<"$merged")
 
         if [[ -n "$SONAR_OVERRIDE" ]]; then
           merged=$(jq --argjson v "$SONAR_OVERRIDE" '.scan.sonar_scan = $v' <<<"$merged")
         fi
 
-        count=$(jq '.projects | length' <<<"$merged")
-        if [[ "$count" -eq 0 ]]; then
-          echo "::error::$CONFIG_FILE declares no projects[] entries"
-          exit 1
-        fi
-
         missing=$(jq -r '
-          [ .projects[] | select((.name // "") == "" or (.docker_image_name // "") == "") | (.name // "<unnamed>") ]
+          [ if (.project.name // "") == "" then "name" else empty end,
+            if (.project.docker_image_name // "") == "" then "docker_image_name" else empty end ]
           | join(", ")
         ' <<<"$merged")
         if [[ -n "$missing" ]]; then
-          echo "::error::projects[] entries missing name or docker_image_name: $missing"
+          echo "::error::$CONFIG_FILE's project is missing required field(s): $missing"
           exit 1
         fi
 
-        matrix=$(jq -c '
-          .registry as $r
-          | ($r.host + (if ($r.docker_repo // "") == "" then "" else "/" + $r.docker_repo end)) as $prefix
-          | {include: [ .projects[] | {
+        project=$(jq -c '
+          (.registry.host + (if (.registry.docker_repo // "") == "" then "" else "/" + .registry.docker_repo end)) as $prefix
+          | .project
+          | {
               name, type, language, builder,
               path: (.path // "."),
               jdk_version: (.jdk_version | tostring),
@@ -142,17 +168,27 @@ runs:
               smoke_test_seconds: (.smoke_test_seconds | tonumber),
               configs_files_to_copy: ((.configs_files_to_copy // []) | tojson),
               image_base: ($prefix + "/" + .docker_image_name)
-            } ]}
+            }
         ' <<<"$merged")
 
-        images=$(jq -r --arg n "${GITHUB_RUN_NUMBER:-0}" \
-          '[ .include[] | .image_base + ":" + $n ] | join(",")' <<<"$matrix")
+        image=$(jq -r --arg n "${GITHUB_RUN_NUMBER:-0}" '.image_base + ":" + $n' <<<"$project")
 
         {
-          echo "matrix=$matrix"
-          echo "images=$images"
           echo "config=$(jq -c . <<<"$merged")"
           echo "cmdb_code=$(jq -r '.cmdb_code' <<<"$merged")"
+          echo "project_name=$(jq -r '.name' <<<"$project")"
+          echo "project_path=$(jq -r '.path' <<<"$project")"
+          echo "jdk_version=$(jq -r '.jdk_version' <<<"$project")"
+          echo "use_buildkit=$(jq -r '.use_buildkit' <<<"$project")"
+          echo "docker_image_name=$(jq -r '.docker_image_name' <<<"$project")"
+          echo "dockerfile=$(jq -r '.dockerfile' <<<"$project")"
+          echo "docker_context=$(jq -r '.docker_context' <<<"$project")"
+          echo "maven_args=$(jq -r '.maven_args' <<<"$project")"
+          echo "smoke_test=$(jq -r '.smoke_test' <<<"$project")"
+          echo "smoke_test_seconds=$(jq -r '.smoke_test_seconds' <<<"$project")"
+          echo "configs_files_to_copy=$(jq -r '.configs_files_to_copy' <<<"$project")"
+          echo "image_base=$(jq -r '.image_base' <<<"$project")"
+          echo "images=$image"
           echo "sonar_scan=$(jq -r '.scan.sonar_scan' <<<"$merged")"
           echo "enable_quality_gate=$(jq -r '.scan.enable_quality_gate // true' <<<"$merged")"
           echo "force_continue_on_scan_failure=$(jq -r '.scan.force_continue_on_scan_failure // false' <<<"$merged")"

@@ -96,10 +96,21 @@ jobs:
     env:
       PLATFORM_TOKEN: ${{ secrets.PLATFORM_REPO_TOKEN || github.token }}
     outputs:
-      matrix: ${{ steps.resolve.outputs.matrix }}
       config: ${{ steps.resolve.outputs.config }}
       cmdb_code: ${{ steps.resolve.outputs.cmdb_code }}
       module_name: ${{ steps.resolve.outputs.module_name }}
+      project_name: ${{ steps.resolve.outputs.project_name }}
+      project_path: ${{ steps.resolve.outputs.project_path }}
+      jdk_version: ${{ steps.resolve.outputs.jdk_version }}
+      use_buildkit: ${{ steps.resolve.outputs.use_buildkit }}
+      docker_image_name: ${{ steps.resolve.outputs.docker_image_name }}
+      dockerfile: ${{ steps.resolve.outputs.dockerfile }}
+      docker_context: ${{ steps.resolve.outputs.docker_context }}
+      maven_args: ${{ steps.resolve.outputs.maven_args }}
+      smoke_test: ${{ steps.resolve.outputs.smoke_test }}
+      smoke_test_seconds: ${{ steps.resolve.outputs.smoke_test_seconds }}
+      configs_files_to_copy: ${{ steps.resolve.outputs.configs_files_to_copy }}
+      image_base: ${{ steps.resolve.outputs.image_base }}
       sonar_scan: ${{ steps.resolve.outputs.sonar_scan }}
       enable_quality_gate: ${{ steps.resolve.outputs.enable_quality_gate }}
       force_continue_on_scan_failure: ${{ steps.resolve.outputs.force_continue_on_scan_failure }}
@@ -163,19 +174,16 @@ jobs:
           sonar_scan: ${{ inputs.sonar_scan }}
 
   build:
-    name: Build ${{ matrix.name }}
+    name: Build ${{ needs.config.outputs.project_name }}
     needs: config
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.config.outputs.matrix) }}
 
     env:
-      PROJECT_DIR: service/${{ inputs.service_path }}/${{ matrix.path }}
-      IMAGE_REF: ${{ matrix.image_base }}:${{ github.run_number }}
+      PROJECT_DIR: service/${{ inputs.service_path }}/${{ needs.config.outputs.project_path }}
+      IMAGE_REF: ${{ needs.config.outputs.image_base }}:${{ github.run_number }}
       JF_URL: ${{ secrets.ARTIFACTORY_URL || format('https://{0}', needs.config.outputs.registry_host) }}
-      JFROG_CLI_BUILD_NAME: ${{ inputs.service_path }}-${{ matrix.name }}
+      JFROG_CLI_BUILD_NAME: ${{ inputs.service_path }}-${{ needs.config.outputs.project_name }}
       JFROG_CLI_BUILD_NUMBER: ${{ github.run_number }}
 
     steps:
@@ -185,11 +193,11 @@ jobs:
           path: service
           fetch-depth: 0
 
-      - name: Set up JDK ${{ matrix.jdk_version }}
+      - name: Set up JDK ${{ needs.config.outputs.jdk_version }}
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ matrix.jdk_version }}
+          java-version: ${{ needs.config.outputs.jdk_version }}
           cache: maven
 
       - name: Set up Artifactory
@@ -206,7 +214,7 @@ jobs:
         uses: ./service/platform-ci/actions/build-maven
         with:
           project_dir: ${{ env.PROJECT_DIR }}
-          maven_args: ${{ matrix.maven_args }}
+          maven_args: ${{ needs.config.outputs.maven_args }}
           fail_on_test_failure: ${{ needs.config.outputs.fail_on_test_failure }}
 
       - name: SonarQube analysis
@@ -227,18 +235,18 @@ jobs:
           project_dir: ${{ env.PROJECT_DIR }}
 
       - name: Smoke test the jar
-        if: matrix.smoke_test
+        if: needs.config.outputs.smoke_test == 'true'
         uses: ./service/platform-ci/actions/smoke-test
         with:
           project_dir: ${{ env.PROJECT_DIR }}
-          seconds: ${{ matrix.smoke_test_seconds }}
+          seconds: ${{ needs.config.outputs.smoke_test_seconds }}
 
       - name: Copy configuration files
-        if: matrix.configs_files_to_copy != '[]'
+        if: needs.config.outputs.configs_files_to_copy != '[]'
         uses: ./service/platform-ci/actions/copy-config-files
         with:
           project_dir: ${{ env.PROJECT_DIR }}
-          files: ${{ matrix.configs_files_to_copy }}
+          files: ${{ needs.config.outputs.configs_files_to_copy }}
           source_root: service/${{ inputs.service_path }}
 
       - name: Build and push the image
@@ -248,11 +256,11 @@ jobs:
           registry: ${{ needs.config.outputs.registry_host }}
           username: ${{ secrets.ARTIFACTORY_USERNAME }}
           password: ${{ secrets.ARTIFACTORY_TOKEN }}
-          context: ${{ env.PROJECT_DIR }}/${{ matrix.docker_context }}
-          dockerfile: ${{ env.PROJECT_DIR }}/${{ matrix.dockerfile }}
-          image_base: ${{ matrix.image_base }}
+          context: ${{ env.PROJECT_DIR }}/${{ needs.config.outputs.docker_context }}
+          dockerfile: ${{ env.PROJECT_DIR }}/${{ needs.config.outputs.dockerfile }}
+          image_base: ${{ needs.config.outputs.image_base }}
           cmdb_code: ${{ needs.config.outputs.cmdb_code }}
-          use_buildkit: ${{ matrix.use_buildkit }}
+          use_buildkit: ${{ needs.config.outputs.use_buildkit }}
 
       - name: Publish build info
         uses: ./service/platform-ci/actions/publish-build-info
@@ -265,7 +273,7 @@ jobs:
         uses: ./service/platform-ci/actions/stamp-properties
         with:
           docker_repo: ${{ needs.config.outputs.docker_repo }}
-          image_name: ${{ matrix.docker_image_name }}
+          image_name: ${{ needs.config.outputs.docker_image_name }}
           cmdb_code: ${{ needs.config.outputs.cmdb_code }}
           sonar_scan: ${{ needs.config.outputs.sonar_scan }}
           build_name: ${{ env.JFROG_CLI_BUILD_NAME }}
@@ -275,12 +283,12 @@ jobs:
         if: always()
         uses: ./service/platform-ci/actions/build-summary
         with:
-          project_name: ${{ matrix.name }}
+          project_name: ${{ needs.config.outputs.project_name }}
           result: ${{ job.status }}
           image: ${{ env.IMAGE_REF }}
           jar_source: ${{ steps.jar.outputs.source }}
           jar_size: ${{ steps.jar.outputs.size }}
-          jdk_version: ${{ matrix.jdk_version }}
+          jdk_version: ${{ needs.config.outputs.jdk_version }}
           sonar_scan: ${{ needs.config.outputs.sonar_scan }}
           gates_source: ${{ needs.config.outputs.gates_source }}
           build_name: ${{ env.JFROG_CLI_BUILD_NAME }}

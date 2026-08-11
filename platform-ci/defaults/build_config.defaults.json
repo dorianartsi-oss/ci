@@ -1,5 +1,5 @@
 {
-  "_comment": "Org-wide defaults. Deep-merged UNDER the service's build_config.json, so anything here is overridable per service. 'project_defaults' is applied to every element of projects[].",
+  "_comment": "Org-wide defaults. Deep-merged UNDER the service's build_config.json, so anything here is overridable per service.",
 
   "cmdb_code": "unknown",
   "owner_email": "",
@@ -32,7 +32,7 @@
     "blueprint": "service"
   },
 
-  "project_defaults": {
+  "project": {
     "type": "docker",
     "language": "java",
     "builder": "maven",
@@ -45,7 +45,5 @@
     "smoke_test": true,
     "smoke_test_seconds": 10,
     "configs_files_to_copy": []
-  },
-
-  "projects": []
+  }
 }

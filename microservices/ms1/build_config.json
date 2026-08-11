@@ -1,22 +1,20 @@
 {
   "cmdb_code": "corp-cmdb-code",
   "owner_email": "payments-team@corporate.io",
-  "projects": [
-    {
-      "name": "ms1",
-      "type": "docker",
-      "language": "java",
-      "builder": "maven",
-      "jdk_version": "17",
-      "use_buildkit": true,
-      "docker_image_name": "payment-processor-service",
-      "dockerfile": "Dockerfile",
-      "docker_context": ".",
-      "maven_args": "-B clean install -DskipTests=false -Ddependency-check.skip=true -e",
-      "smoke_test": true,
-      "smoke_test_seconds": 10
-    }
-  ],
+  "project": {
+    "name": "ms1",
+    "type": "docker",
+    "language": "java",
+    "builder": "maven",
+    "jdk_version": "17",
+    "use_buildkit": true,
+    "docker_image_name": "payment-processor-service",
+    "dockerfile": "Dockerfile",
+    "docker_context": ".",
+    "maven_args": "-B clean install -DskipTests=false -Ddependency-check.skip=true -e",
+    "smoke_test": true,
+    "smoke_test_seconds": 10
+  },
   "scan": {
     "sonar_scan": true
   },
