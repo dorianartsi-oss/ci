@@ -1,10 +1,11 @@
 name: SonarQube analysis
 description: >
-  Runs the SonarQube analyzer through the same Maven that just built, so it reuses the
-  compiled classes and the JaCoCo report instead of recompiling. The blocker, critical
-  and duplication thresholds live in the server-side Quality Gate; sonar.qualitygate.wait
-  makes this step block on that verdict. Replaces tasks/sonarqube.yaml and
-  tasks/get_quality_gates_sonar.yaml.
+  Runs the SonarQube analyzer through the same Maven that just built, matching the
+  "jf mvn sonar:sonar" half of the combined build+sonar shell task in
+  tasks/sonarqube.yaml, immediately after "jf mvn clean install". sonar.qualitygate.wait
+  makes this step block on and fail on a red Quality Gate; that flag is our own
+  addition, not confirmed against the Ansible source, chosen as the safer default for
+  a bank pipeline.
 
 inputs:
   project_dir:

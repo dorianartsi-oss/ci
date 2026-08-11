@@ -2,8 +2,10 @@ name: Stage the application jar
 description: >
   Normalizes the built jar to target/app.jar, because the Dockerfile contract is a
   fixed COPY target/app.jar. The largest candidate wins: Spring Boot's repackaged
-  executable jar always dominates the thin .jar.original left beside it.
-  Replaces the artifact-naming half of tasks/build_java.yaml.
+  executable jar always dominates the thin .jar.original left beside it. No
+  equivalent step is confirmed in the Ansible source for docker+java services;
+  tasks/build_java.yaml never runs for type: docker, so this is a GitHub
+  Actions-native addition, not a ported task.
 
 inputs:
   project_dir:

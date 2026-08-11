@@ -2,8 +2,10 @@ name: Smoke test the jar
 description: >
   Boots the staged jar and requires it to still be running when the timer expires.
   `timeout` reports 124 when it had to kill a healthy process, so 124 is the success
-  case; a clean exit 0 means the service died on its own and is a failure.
-  Replaces the smoke-test step of tasks/build_java.yaml.
+  case; a clean exit 0 means the service died on its own and is a failure. No
+  equivalent step is confirmed in the Ansible source for docker+java services;
+  tasks/build_java.yaml never runs for type: docker, so this is a GitHub
+  Actions-native addition, not a ported task.
 
 inputs:
   project_dir:

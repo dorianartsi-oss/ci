@@ -3,9 +3,11 @@ description: >
   Validates the project layout, then runs the Maven build through the JFrog CLI so
   every resolved dependency is recorded into the build-info manifest. On failure it
   reports which artifacts Artifactory was asked for and never served, which is the
-  decisive diagnostic on a restricted network. Replaces tasks/build_java.yaml and the
-  layout half of tasks/pre_build_tasks.yaml; the workspace cleanup that task also did
-  is handled natively by actions/checkout, which runs git clean -ffdx.
+  decisive diagnostic on a restricted network. For docker+java services this covers
+  the "jf mvn clean install" step of the combined build+sonar shell task in
+  tasks/sonarqube.yaml; tasks/build_java.yaml is gated on type=="java" and never runs
+  for type: docker. The workspace cleanup pre_build_tasks.yaml did is handled
+  natively by actions/checkout, which runs git clean -ffdx.
 
 inputs:
   project_dir:

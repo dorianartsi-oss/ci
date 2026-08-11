@@ -209,6 +209,17 @@ jobs:
           maven_args: ${{ matrix.maven_args }}
           fail_on_test_failure: ${{ needs.config.outputs.fail_on_test_failure }}
 
+      - name: SonarQube analysis
+        if: needs.config.outputs.sonar_scan == 'true'
+        uses: ./service/platform-ci/actions/sonar-scan
+        with:
+          project_dir: ${{ env.PROJECT_DIR }}
+          host_url: ${{ secrets.SONAR_HOST_URL }}
+          token: ${{ secrets.SONAR_TOKEN }}
+          project_key: ${{ needs.config.outputs.module_name }}
+          enable_quality_gate: ${{ needs.config.outputs.enable_quality_gate }}
+          force_continue_on_scan_failure: ${{ needs.config.outputs.force_continue_on_scan_failure }}
+
       - name: Stage the application jar
         id: jar
         uses: ./service/platform-ci/actions/stage-jar
@@ -221,17 +232,6 @@ jobs:
         with:
           project_dir: ${{ env.PROJECT_DIR }}
           seconds: ${{ matrix.smoke_test_seconds }}
-
-      - name: SonarQube analysis
-        if: needs.config.outputs.sonar_scan == 'true'
-        uses: ./service/platform-ci/actions/sonar-scan
-        with:
-          project_dir: ${{ env.PROJECT_DIR }}
-          host_url: ${{ secrets.SONAR_HOST_URL }}
-          token: ${{ secrets.SONAR_TOKEN }}
-          project_key: ${{ needs.config.outputs.cmdb_code }}-${{ matrix.name }}
-          enable_quality_gate: ${{ needs.config.outputs.enable_quality_gate }}
-          force_continue_on_scan_failure: ${{ needs.config.outputs.force_continue_on_scan_failure }}
 
       - name: Copy configuration files
         if: matrix.configs_files_to_copy != '[]'
