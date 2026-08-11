@@ -174,7 +174,7 @@ jobs:
     env:
       PROJECT_DIR: service/${{ inputs.service_path }}/${{ matrix.path }}
       IMAGE_REF: ${{ matrix.image_base }}:${{ github.run_number }}
-      JF_URL: ${{ secrets.ARTIFACTORY_URL || format('https://{0}/artifactory', needs.config.outputs.registry_host) }}
+      JF_URL: ${{ secrets.ARTIFACTORY_URL || format('https://{0}', needs.config.outputs.registry_host) }}
       JFROG_CLI_BUILD_NAME: ${{ inputs.service_path }}-${{ matrix.name }}
       JFROG_CLI_BUILD_NUMBER: ${{ github.run_number }}
 
