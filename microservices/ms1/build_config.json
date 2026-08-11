@@ -3,7 +3,7 @@
   "owner_email": "payments-team@corporate.io",
   "projects": [
     {
-      "name": "demo",
+      "name": "ms1",
       "type": "docker",
       "language": "java",
       "builder": "maven",

@@ -2,9 +2,8 @@ name: Resolve build config
 description: >
   Deep-merges org defaults, the service's build_config.json, the central quality
   gates, and any workflow_dispatch overrides into a single effective config, and
-  emits a build matrix over projects[]. Replaces create_json_file.py and the sed
-  placeholder-substitution step (secrets are now injected as env at point of use,
-  never written into JSON on disk).
+  emits a build matrix over projects[]. Precedence runs lowest to highest in that
+  order, so central gates win and a team cannot lower a threshold set for it.
 
 inputs:
   config_file:
@@ -89,19 +88,14 @@ runs:
         [[ -s "$gates_file" ]] || printf '{}' > "$gates_file"
         jq empty "$gates_file" || { echo "::error::gates_json is not valid JSON"; exit 1; }
 
-        # Precedence, lowest to highest: org defaults -> service config -> central
-        # gates. Gates land last on purpose: a team must not be able to lower a
-        # threshold the platform set for it.
         merged=$(jq -s '.[0] * .[1] * .[2]' "$defaults" "$CONFIG_FILE" "$gates_file")
 
-        # Apply project_defaults to every project, then drop the template key.
         merged=$(jq '
           (.project_defaults // {}) as $pd
           | .projects |= map($pd * .)
           | del(.project_defaults, ._comment)
         ' <<<"$merged")
 
-        # workflow_dispatch overrides win over everything.
         if [[ -n "$SONAR_OVERRIDE" ]]; then
           merged=$(jq --argjson v "$SONAR_OVERRIDE" '.scan.sonar_scan = $v' <<<"$merged")
         fi
@@ -121,9 +115,6 @@ runs:
           exit 1
         fi
 
-        # image_base is resolved here rather than in the workflow so that the
-        # registry layout lives in exactly one place. A blank docker_repo is
-        # allowed: some virtual registries map the repository into the hostname.
         matrix=$(jq -c '
           .registry as $r
           | ($r.host + (if ($r.docker_repo // "") == "" then "" else "/" + $r.docker_repo end)) as $prefix

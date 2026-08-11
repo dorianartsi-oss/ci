@@ -1,15 +1,13 @@
-# Caller workflow for the "demo" microservice.
-# The ONLY file a service team owns besides build_config.json.
 name: CI / ms1
 
 on:
   push:
-    branches: [master]
+    branches: [main, master]
     paths:
       - 'ms1/**'
       - '.github/workflows/ms1-service.yml'
   pull_request:
-    branches: [master]
+    branches: [main, master]
     paths:
       - 'ms1/**'
       - '.github/workflows/ms1-service.yml'

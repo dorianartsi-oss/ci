@@ -1,25 +1,26 @@
-# TEMPLATE — copy to <service-name>.yml, replace every SERVICE_NAME, delete this line.
-# Do not enable this file as-is; the leading underscore keeps it inert only by convention,
-# so GitHub WILL still parse it. Rename on copy rather than editing in place.
+# Copy to <service-name>.yml and replace every SERVICE_NAME. GitHub still parses this
+# file in place, so rename on copy rather than editing it here.
 name: CI / SERVICE_NAME
 
 on:
   push:
-    branches: [master]
+    branches: [main, master]
     paths:
       - 'SERVICE_NAME/**'
       - '.github/workflows/SERVICE_NAME.yml'
   pull_request:
-    branches: [master]
+    branches: [main, master]
     paths:
       - 'SERVICE_NAME/**'
       - '.github/workflows/SERVICE_NAME.yml'
   workflow_dispatch:
     inputs:
       runner_label:
+        description: Self-hosted runner label
         type: string
         default: private-gcp-runner
       sonar_scan:
+        description: Override SonarQube scan (blank = use build_config.json)
         type: choice
         options: ['', 'true', 'false']
         default: ''

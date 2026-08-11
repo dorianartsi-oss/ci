@@ -1,7 +1,8 @@
 name: Resolve quality gates
 description: >
   Reads the per-CMDB quality-gate thresholds from the central gates repo,
-  falling back to default.json. Replaces the Ansible-era "Fetch-Gates" job.
+  falling back to default.json, and reshapes them into the build_config.json
+  tree so the caller can deep-merge them directly.
 
 inputs:
   cmdb_code:
@@ -56,8 +57,6 @@ runs:
           exit 1
         fi
 
-        # Shape the flat gate file into the same tree as build_config.json so the
-        # merge in resolve-config is a plain deep-merge.
         gates=$(jq -c '{scan: {sonar: {quality_gate: .sonar}}, tests: .tests}' "$source_file")
 
         echo "gates_json=$gates" >> "$GITHUB_OUTPUT"
