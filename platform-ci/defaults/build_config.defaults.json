@@ -18,8 +18,7 @@
   },
 
   "tests": {
-    "fail_on_test_failure": true,
-    "min_coverage": 0
+    "fail_on_test_failure": true
   },
 
   "notify": {

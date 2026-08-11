@@ -74,6 +74,8 @@ runs:
           failure) colour="#cf222e"; word="FAILED" ;;
           *)       colour="#9a6700"; word="$(echo "$STATUS" | tr '[:lower:]' '[:upper:]')" ;;
         esac
+        if [[ "$STATUS" == "success" ]]; then verdict="SUCCESS"; else verdict="FAILED"; fi
+        echo "subject=${verdict}: Running GitHub Actions Pipeline ${SERVICE}" >> "$GITHUB_OUTPUT"
         run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
         {
           echo 'html<<HTML_EOF'
@@ -105,6 +107,6 @@ runs:
         password: ${{ inputs.smtp_password }}
         from: CI Pipeline <${{ inputs.from_address }}>
         to: ${{ steps.to.outputs.list }}
-        subject: "[CI ${{ inputs.status }}] ${{ inputs.service }} — ${{ github.ref_name }} #${{ github.run_number }}"
+        subject: ${{ steps.body.outputs.subject }}
         html_body: ${{ steps.body.outputs.html }}
         ignore_cert: false

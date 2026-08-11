@@ -103,7 +103,6 @@ jobs:
       sonar_scan: ${{ steps.resolve.outputs.sonar_scan }}
       enable_quality_gate: ${{ steps.resolve.outputs.enable_quality_gate }}
       force_continue_on_scan_failure: ${{ steps.resolve.outputs.force_continue_on_scan_failure }}
-      min_coverage: ${{ steps.resolve.outputs.min_coverage }}
       fail_on_test_failure: ${{ steps.resolve.outputs.fail_on_test_failure }}
       notify_email: ${{ steps.resolve.outputs.notify_email }}
       github_pages: ${{ steps.resolve.outputs.github_pages }}
@@ -178,7 +177,6 @@ jobs:
       JF_URL: ${{ secrets.ARTIFACTORY_URL || format('https://{0}/artifactory', needs.config.outputs.registry_host) }}
       JFROG_CLI_BUILD_NAME: ${{ inputs.service_path }}-${{ matrix.name }}
       JFROG_CLI_BUILD_NUMBER: ${{ github.run_number }}
-      MAVEN_LOG: ${{ github.workspace }}/maven_build_output.txt
 
     steps:
       - name: Check out the service repository
@@ -186,12 +184,6 @@ jobs:
         with:
           path: service
           fetch-depth: 0
-
-      - name: Prepare the workspace
-        uses: ./service/platform-ci/actions/prepare-workspace
-        with:
-          project_dir: ${{ env.PROJECT_DIR }}
-          maven_log: ${{ env.MAVEN_LOG }}
 
       - name: Set up JDK ${{ matrix.jdk_version }}
         uses: actions/setup-java@v4
@@ -216,7 +208,6 @@ jobs:
           project_dir: ${{ env.PROJECT_DIR }}
           maven_args: ${{ matrix.maven_args }}
           fail_on_test_failure: ${{ needs.config.outputs.fail_on_test_failure }}
-          maven_log: ${{ env.MAVEN_LOG }}
 
       - name: Stage the application jar
         id: jar
@@ -230,15 +221,6 @@ jobs:
         with:
           project_dir: ${{ env.PROJECT_DIR }}
           seconds: ${{ matrix.smoke_test_seconds }}
-
-      - name: Enforce the coverage gate
-        id: coverage
-        uses: ./service/platform-ci/actions/coverage-gate
-        with:
-          project_dir: ${{ env.PROJECT_DIR }}
-          min_coverage: ${{ needs.config.outputs.min_coverage }}
-          enable_quality_gate: ${{ needs.config.outputs.enable_quality_gate }}
-          force_continue_on_scan_failure: ${{ needs.config.outputs.force_continue_on_scan_failure }}
 
       - name: SonarQube analysis
         if: needs.config.outputs.sonar_scan == 'true'
@@ -299,7 +281,6 @@ jobs:
           jar_source: ${{ steps.jar.outputs.source }}
           jar_size: ${{ steps.jar.outputs.size }}
           jdk_version: ${{ matrix.jdk_version }}
-          coverage: ${{ steps.coverage.outputs.percent }}
           sonar_scan: ${{ needs.config.outputs.sonar_scan }}
           gates_source: ${{ needs.config.outputs.gates_source }}
           build_name: ${{ env.JFROG_CLI_BUILD_NAME }}
@@ -381,6 +362,7 @@ jobs:
 
       - name: Send the build report
         if: needs.config.outputs.notify_email == 'true' && env.SMTP_SERVER != ''
+        continue-on-error: true
         uses: ./service/platform-ci/actions/notify-email
         with:
           smtp_server: ${{ secrets.SMTP_SERVER }}

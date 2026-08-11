@@ -24,10 +24,6 @@ inputs:
   jdk_version:
     description: JDK the build ran on
     required: true
-  coverage:
-    description: Measured line coverage
-    required: false
-    default: 'n/a'
   sonar_scan:
     description: Whether SonarQube ran
     required: true
@@ -53,7 +49,6 @@ runs:
         JAR_SOURCE: ${{ inputs.jar_source }}
         JAR_SIZE: ${{ inputs.jar_size }}
         JDK_VERSION: ${{ inputs.jdk_version }}
-        COVERAGE: ${{ inputs.coverage }}
         SONAR_SCAN: ${{ inputs.sonar_scan }}
         GATES_SOURCE: ${{ inputs.gates_source }}
         BUILD_NAME: ${{ inputs.build_name }}
@@ -68,7 +63,6 @@ runs:
           echo "| Image | \`${IMAGE}\` |"
           echo "| Jar | \`${JAR_SOURCE:-not produced}\` (${JAR_SIZE:-—}) |"
           echo "| JDK | ${JDK_VERSION} |"
-          echo "| Line coverage | ${COVERAGE:-n/a} |"
           echo "| SonarQube | ${SONAR_SCAN} |"
           echo "| Quality gates | \`${GATES_SOURCE}\` |"
           echo "| Commit | \`${GITHUB_SHA}\` |"

@@ -1,9 +1,11 @@
 name: Build with Maven
 description: >
-  Runs the Maven build through the JFrog CLI so every resolved dependency is recorded
-  into the build-info manifest. On failure it reports which artifacts Artifactory was
-  asked for and never served, which is the decisive diagnostic on a restricted network.
-  Replaces the Maven half of tasks/build_java.yaml.
+  Validates the project layout, then runs the Maven build through the JFrog CLI so
+  every resolved dependency is recorded into the build-info manifest. On failure it
+  reports which artifacts Artifactory was asked for and never served, which is the
+  decisive diagnostic on a restricted network. Replaces tasks/build_java.yaml and the
+  layout half of tasks/pre_build_tasks.yaml; the workspace cleanup that task also did
+  is handled natively by actions/checkout, which runs git clean -ffdx.
 
 inputs:
   project_dir:
@@ -16,9 +18,6 @@ inputs:
     description: When 'false', failing tests are reported but do not fail the build
     required: false
     default: 'true'
-  maven_log:
-    description: Absolute path to write the build log to
-    required: true
 
 outputs:
   missing_dependencies:
@@ -28,6 +27,21 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Validate the project layout
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project_dir }}
+      run: |
+        set -euo pipefail
+        if [[ ! -d "$PROJECT_DIR" ]]; then
+          echo "::error::Project directory $PROJECT_DIR does not exist"
+          exit 1
+        fi
+        if [[ ! -f "$PROJECT_DIR/pom.xml" ]]; then
+          echo "::error::No pom.xml in $PROJECT_DIR"
+          exit 1
+        fi
+
     - name: Run the Maven build
       id: mvn
       shell: bash
@@ -35,7 +49,6 @@ runs:
       env:
         MAVEN_ARGS_IN: ${{ inputs.maven_args }}
         FAIL_ON_TEST_FAILURE: ${{ inputs.fail_on_test_failure }}
-        MAVEN_LOG: ${{ inputs.maven_log }}
       run: |
         set -euo pipefail
         args="$MAVEN_ARGS_IN"
@@ -44,7 +57,7 @@ runs:
         fi
         echo "Running: jf mvn $args"
         set +e
-        jf mvn $args 2>&1 | tee "$MAVEN_LOG"
+        jf mvn $args 2>&1 | tee "$RUNNER_TEMP/maven_build_output.txt"
         status=${PIPESTATUS[0]}
         set -e
         exit "$status"
@@ -53,14 +66,13 @@ runs:
       id: diagnose
       if: failure() && steps.mvn.outcome == 'failure'
       shell: bash
-      env:
-        MAVEN_LOG: ${{ inputs.maven_log }}
       run: |
         set -uo pipefail
-        [[ -f "$MAVEN_LOG" ]] || exit 0
+        log="$RUNNER_TEMP/maven_build_output.txt"
+        [[ -f "$log" ]] || exit 0
         tmp=$(mktemp -d)
-        grep -E 'Downloading from ' "$MAVEN_LOG" | grep -oE 'https?://[^ ]+' | sort -u > "$tmp/requested"
-        grep -E 'Downloaded from '  "$MAVEN_LOG" | grep -oE 'https?://[^ ]+' | sort -u > "$tmp/received"
+        grep -E 'Downloading from ' "$log" | grep -oE 'https?://[^ ]+' | sort -u > "$tmp/requested"
+        grep -E 'Downloaded from '  "$log" | grep -oE 'https?://[^ ]+' | sort -u > "$tmp/received"
         missing=$(comm -23 "$tmp/requested" "$tmp/received")
         {
           echo "### Unresolved dependencies"
