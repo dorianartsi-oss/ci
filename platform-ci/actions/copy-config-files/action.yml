@@ -1,0 +1,59 @@
+name: Copy configuration files
+description: >
+  Copies the files listed in project.configs_files_to_copy into the build context
+  before the image is built. Accepts either a plain path string, which lands in the
+  project directory under its own basename, or an object with src and dest.
+  Replaces tasks/copy_config_files.yaml.
+
+inputs:
+  project_dir:
+    description: Destination root for relative dest paths
+    required: true
+  files:
+    description: JSON array of paths or {"src","dest"} objects
+    required: false
+    default: '[]'
+  source_root:
+    description: Root that relative src paths are resolved against
+    required: false
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    - name: Copy
+      shell: bash
+      env:
+        PROJECT_DIR: ${{ inputs.project_dir }}
+        FILES: ${{ inputs.files }}
+        SOURCE_ROOT: ${{ inputs.source_root }}
+      run: |
+        set -euo pipefail
+        if ! jq empty <<<"$FILES" 2>/dev/null; then
+          echo "::error::project.configs_files_to_copy is not valid JSON: $FILES"
+          exit 1
+        fi
+        count=$(jq 'length' <<<"$FILES")
+        if [[ "$count" -eq 0 ]]; then
+          echo "No configuration files to copy."
+          exit 0
+        fi
+
+        jq -r '.[] | if type == "string" then . + "\t" else (.src + "\t" + (.dest // "")) end' <<<"$FILES" |
+        tr -d '\r' |
+        while IFS=$'\t' read -r src dest; do
+          [[ -n "$src" ]] || continue
+          from="$SOURCE_ROOT/$src"
+          if [[ ! -e "$from" ]]; then
+            echo "::error::configs_files_to_copy entry not found: $from"
+            exit 1
+          fi
+          if [[ -z "$dest" ]]; then
+            to="$PROJECT_DIR/$(basename "$src")"
+          else
+            to="$PROJECT_DIR/$dest"
+          fi
+          mkdir -p "$(dirname "$to")"
+          cp -r "$from" "$to"
+          echo "Copied $from -> $to"
+        done

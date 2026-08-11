@@ -35,6 +35,24 @@ outputs:
   sonar_scan:
     value: ${{ steps.merge.outputs.sonar_scan }}
     description: Effective SonarQube toggle
+  enable_quality_gate:
+    value: ${{ steps.merge.outputs.enable_quality_gate }}
+    description: Whether the quality gates are enforced at all
+  force_continue_on_scan_failure:
+    value: ${{ steps.merge.outputs.force_continue_on_scan_failure }}
+    description: Report gate breaches without failing the build
+  module_name:
+    value: ${{ steps.merge.outputs.module_name }}
+    description: Human-readable module name used in the email subject
+  github_pages:
+    value: ${{ steps.merge.outputs.github_pages }}
+    description: Whether the build report is published to GitHub Pages
+  port_enabled:
+    value: ${{ steps.merge.outputs.port_enabled }}
+    description: Whether the Port.io entity is upserted
+  port_blueprint:
+    value: ${{ steps.merge.outputs.port_blueprint }}
+    description: Port.io blueprint identifier
   images:
     value: ${{ steps.merge.outputs.images }}
     description: Comma-separated image references this run will push
@@ -125,6 +143,7 @@ runs:
               use_buildkit, docker_image_name, dockerfile, docker_context,
               maven_args, smoke_test,
               smoke_test_seconds: (.smoke_test_seconds | tonumber),
+              configs_files_to_copy: ((.configs_files_to_copy // []) | tojson),
               image_base: ($prefix + "/" + .docker_image_name)
             } ]}
         ' <<<"$merged")
@@ -138,6 +157,12 @@ runs:
           echo "config=$(jq -c . <<<"$merged")"
           echo "cmdb_code=$(jq -r '.cmdb_code' <<<"$merged")"
           echo "sonar_scan=$(jq -r '.scan.sonar_scan' <<<"$merged")"
+          echo "enable_quality_gate=$(jq -r '.scan.enable_quality_gate // true' <<<"$merged")"
+          echo "force_continue_on_scan_failure=$(jq -r '.scan.force_continue_on_scan_failure // false' <<<"$merged")"
+          echo "module_name=$(jq -r 'if (.module_name // "") == "" then .cmdb_code else .module_name end' <<<"$merged")"
+          echo "github_pages=$(jq -r '.notify.github_pages // false' <<<"$merged")"
+          echo "port_enabled=$(jq -r '.port.enabled // false' <<<"$merged")"
+          echo "port_blueprint=$(jq -r '.port.blueprint // "service"' <<<"$merged")"
           echo "min_coverage=$(jq -r '.tests.min_coverage // 0' <<<"$merged")"
           echo "fail_on_test_failure=$(jq -r '.tests.fail_on_test_failure // true' <<<"$merged")"
           echo "notify_email=$(jq -r '.notify.email' <<<"$merged")"

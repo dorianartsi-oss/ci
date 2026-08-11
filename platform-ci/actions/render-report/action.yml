@@ -1,0 +1,93 @@
+name: Render the build report
+description: >
+  Writes a self-contained HTML build report for publication to GitHub Pages.
+  Replaces tasks/github_pages.yaml.
+
+inputs:
+  output_dir:
+    description: Directory the report is written to
+    required: false
+    default: report
+  service:
+    description: Service path this run built
+    required: true
+  module_name:
+    description: Human-readable module name
+    required: true
+  status:
+    description: Overall build result
+    required: true
+  images:
+    description: Comma-separated images this run pushed
+    required: false
+    default: ''
+  duration:
+    description: Human-readable build duration
+    required: false
+    default: ''
+  gates_source:
+    description: Gate file the thresholds came from
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Render
+      shell: bash
+      env:
+        OUTPUT_DIR: ${{ inputs.output_dir }}
+        SERVICE: ${{ inputs.service }}
+        MODULE_NAME: ${{ inputs.module_name }}
+        STATUS: ${{ inputs.status }}
+        IMAGES: ${{ inputs.images }}
+        DURATION: ${{ inputs.duration }}
+        GATES_SOURCE: ${{ inputs.gates_source }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$OUTPUT_DIR"
+        case "$STATUS" in
+          success) colour="#1a7f37"; word="SUCCEEDED" ;;
+          failure) colour="#cf222e"; word="FAILED" ;;
+          *)       colour="#9a6700"; word=$(tr '[:lower:]' '[:upper:]' <<<"$STATUS") ;;
+        esac
+        run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+        images_html=$(tr ',' '\n' <<<"$IMAGES" | sed '/^$/d' | sed 's|.*|<li><code>&</code></li>|' | tr -d '\n')
+        [[ -n "$images_html" ]] || images_html="<li>none pushed</li>"
+
+        cat > "$OUTPUT_DIR/index.html" <<HTML
+        <!doctype html>
+        <html lang="en">
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>CI report — ${MODULE_NAME}</title>
+        <style>
+          :root { color-scheme: light dark; }
+          body { font-family: system-ui, Segoe UI, Arial, sans-serif; margin: 2rem auto; max-width: 48rem; padding: 0 1rem; }
+          h1 { color: ${colour}; margin-bottom: 0.25rem; }
+          table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+          td { padding: 0.5rem 0.75rem; border-bottom: 1px solid rgba(128,128,128,0.3); vertical-align: top; }
+          td:first-child { font-weight: 600; width: 12rem; }
+          code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+          ul { margin: 0; padding-left: 1.1rem; }
+        </style>
+        </head>
+        <body>
+          <h1>CI ${word}</h1>
+          <p>${MODULE_NAME} &mdash; run #${GITHUB_RUN_NUMBER}</p>
+          <table>
+            <tr><td>Service</td><td>${SERVICE}</td></tr>
+            <tr><td>Repository</td><td>${GITHUB_REPOSITORY}</td></tr>
+            <tr><td>Branch</td><td>${GITHUB_REF_NAME}</td></tr>
+            <tr><td>Commit</td><td><code>${GITHUB_SHA}</code></td></tr>
+            <tr><td>Triggered by</td><td>${GITHUB_ACTOR}</td></tr>
+            <tr><td>Duration</td><td>${DURATION}</td></tr>
+            <tr><td>Quality gates</td><td><code>${GATES_SOURCE}</code></td></tr>
+            <tr><td>Images</td><td><ul>${images_html}</ul></td></tr>
+          </table>
+          <p><a href="${run_url}">Open the full run log</a></p>
+        </body>
+        </html>
+        HTML
+        echo "Wrote $OUTPUT_DIR/index.html"

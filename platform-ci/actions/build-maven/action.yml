@@ -1,0 +1,86 @@
+name: Build with Maven
+description: >
+  Runs the Maven build through the JFrog CLI so every resolved dependency is recorded
+  into the build-info manifest. On failure it reports which artifacts Artifactory was
+  asked for and never served, which is the decisive diagnostic on a restricted network.
+  Replaces the Maven half of tasks/build_java.yaml.
+
+inputs:
+  project_dir:
+    description: Directory containing the project's pom.xml
+    required: true
+  maven_args:
+    description: Arguments passed to jf mvn
+    required: true
+  fail_on_test_failure:
+    description: When 'false', failing tests are reported but do not fail the build
+    required: false
+    default: 'true'
+  maven_log:
+    description: Absolute path to write the build log to
+    required: true
+
+outputs:
+  missing_dependencies:
+    description: Newline-separated artifacts Artifactory did not serve
+    value: ${{ steps.diagnose.outputs.missing }}
+
+runs:
+  using: composite
+  steps:
+    - name: Run the Maven build
+      id: mvn
+      shell: bash
+      working-directory: ${{ inputs.project_dir }}
+      env:
+        MAVEN_ARGS_IN: ${{ inputs.maven_args }}
+        FAIL_ON_TEST_FAILURE: ${{ inputs.fail_on_test_failure }}
+        MAVEN_LOG: ${{ inputs.maven_log }}
+      run: |
+        set -euo pipefail
+        args="$MAVEN_ARGS_IN"
+        if [[ "$FAIL_ON_TEST_FAILURE" != "true" ]]; then
+          args="$args -Dmaven.test.failure.ignore=true"
+        fi
+        echo "Running: jf mvn $args"
+        set +e
+        jf mvn $args 2>&1 | tee "$MAVEN_LOG"
+        status=${PIPESTATUS[0]}
+        set -e
+        exit "$status"
+
+    - name: Diagnose unresolved dependencies
+      id: diagnose
+      if: failure() && steps.mvn.outcome == 'failure'
+      shell: bash
+      env:
+        MAVEN_LOG: ${{ inputs.maven_log }}
+      run: |
+        set -uo pipefail
+        [[ -f "$MAVEN_LOG" ]] || exit 0
+        tmp=$(mktemp -d)
+        grep -E 'Downloading from ' "$MAVEN_LOG" | grep -oE 'https?://[^ ]+' | sort -u > "$tmp/requested"
+        grep -E 'Downloaded from '  "$MAVEN_LOG" | grep -oE 'https?://[^ ]+' | sort -u > "$tmp/received"
+        missing=$(comm -23 "$tmp/requested" "$tmp/received")
+        {
+          echo "### Unresolved dependencies"
+          echo
+          if [[ -z "$missing" ]]; then
+            echo "Every requested artifact was served. The failure is in compilation or tests, not the network."
+          else
+            echo "Artifactory did not serve these artifacts:"
+            echo '```'
+            echo "$missing"
+            echo '```'
+          fi
+        } >> "$GITHUB_STEP_SUMMARY"
+        {
+          echo 'missing<<MISSING_EOF'
+          echo "$missing"
+          echo 'MISSING_EOF'
+        } >> "$GITHUB_OUTPUT"
+        if [[ -n "$missing" ]]; then
+          echo "::error::Artifactory did not serve $(wc -l <<<"$missing") artifact(s); see the job summary."
+        fi
+        rm -rf "$tmp"
+        exit 0

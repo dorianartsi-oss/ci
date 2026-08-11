@@ -1,0 +1,76 @@
+name: SonarQube analysis
+description: >
+  Runs the SonarQube analyzer through the same Maven that just built, so it reuses the
+  compiled classes and the JaCoCo report instead of recompiling. The blocker, critical
+  and duplication thresholds live in the server-side Quality Gate; sonar.qualitygate.wait
+  makes this step block on that verdict. Replaces tasks/sonarqube.yaml and
+  tasks/get_quality_gates_sonar.yaml.
+
+inputs:
+  project_dir:
+    description: Directory containing the project's pom.xml
+    required: true
+  host_url:
+    description: SonarQube server URL
+    required: true
+  token:
+    description: SonarQube token
+    required: true
+  project_key:
+    description: Sonar project key and display name
+    required: true
+  enable_quality_gate:
+    description: When 'false', analysis is submitted without blocking on the gate verdict
+    required: false
+    default: 'true'
+  force_continue_on_scan_failure:
+    description: When 'true', a red quality gate is reported as a warning instead of failing
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Analyze
+      shell: bash
+      working-directory: ${{ inputs.project_dir }}
+      env:
+        SONAR_HOST_URL: ${{ inputs.host_url }}
+        SONAR_TOKEN: ${{ inputs.token }}
+        PROJECT_KEY: ${{ inputs.project_key }}
+        ENABLE_GATE: ${{ inputs.enable_quality_gate }}
+        FORCE_CONTINUE: ${{ inputs.force_continue_on_scan_failure }}
+      run: |
+        set -euo pipefail
+        if [[ -z "${SONAR_HOST_URL:-}" || -z "${SONAR_TOKEN:-}" ]]; then
+          echo "::error::scan.sonar_scan is true but SONAR_HOST_URL/SONAR_TOKEN are not set."
+          exit 1
+        fi
+
+        wait_for_gate=true
+        if [[ "$ENABLE_GATE" != "true" ]]; then
+          wait_for_gate=false
+          echo "scan.enable_quality_gate is false: submitting analysis without blocking on the verdict."
+        fi
+
+        set +e
+        jf mvn sonar:sonar \
+          -Dsonar.host.url="$SONAR_HOST_URL" \
+          -Dsonar.token="$SONAR_TOKEN" \
+          -Dsonar.projectKey="$PROJECT_KEY" \
+          -Dsonar.projectName="$PROJECT_KEY" \
+          -Dsonar.qualitygate.wait="$wait_for_gate" \
+          -Dsonar.scm.revision="$GITHUB_SHA"
+        status=$?
+        set -e
+
+        if [[ "$status" -ne 0 ]]; then
+          if [[ "$FORCE_CONTINUE" == "true" ]]; then
+            echo "::warning::SonarQube reported a failure but scan.force_continue_on_scan_failure is true; continuing."
+            echo "- SonarQube: **breached**, continued because \`force_continue_on_scan_failure\` is set" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::error::SonarQube analysis failed or the quality gate is red."
+          exit "$status"
+        fi
+        echo "- SonarQube: passed" >> "$GITHUB_STEP_SUMMARY"

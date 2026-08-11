@@ -3,6 +3,7 @@
 
   "cmdb_code": "unknown",
   "owner_email": "",
+  "module_name": "",
 
   "registry": {
     "host": "artifactory.corporate.io",
@@ -11,7 +12,9 @@
   },
 
   "scan": {
-    "sonar_scan": true
+    "sonar_scan": true,
+    "enable_quality_gate": true,
+    "force_continue_on_scan_failure": false
   },
 
   "tests": {
@@ -21,7 +24,13 @@
 
   "notify": {
     "email": true,
-    "recipients": []
+    "recipients": [],
+    "github_pages": false
+  },
+
+  "port": {
+    "enabled": false,
+    "blueprint": "service"
   },
 
   "project_defaults": {
@@ -35,7 +44,8 @@
     "docker_context": ".",
     "maven_args": "-B clean install -DskipTests=false -e",
     "smoke_test": true,
-    "smoke_test_seconds": 10
+    "smoke_test_seconds": 10,
+    "configs_files_to_copy": []
   },
 
   "projects": []

@@ -1,0 +1,40 @@
+name: Stage the application jar
+description: >
+  Normalizes the built jar to target/app.jar, because the Dockerfile contract is a
+  fixed COPY target/app.jar. The largest candidate wins: Spring Boot's repackaged
+  executable jar always dominates the thin .jar.original left beside it.
+  Replaces the artifact-naming half of tasks/build_java.yaml.
+
+inputs:
+  project_dir:
+    description: Directory containing target/
+    required: true
+
+outputs:
+  source:
+    description: The jar that was staged
+    value: ${{ steps.stage.outputs.source }}
+  size:
+    description: Human-readable size of the staged jar
+    value: ${{ steps.stage.outputs.size }}
+
+runs:
+  using: composite
+  steps:
+    - name: Stage
+      id: stage
+      shell: bash
+      working-directory: ${{ inputs.project_dir }}
+      run: |
+        set -euo pipefail
+        mapfile -t jars < <(find target -maxdepth 1 -name '*.jar' \
+          ! -name '*-sources.jar' ! -name '*-javadoc.jar' ! -name 'app.jar' \
+          -printf '%s\t%p\n' | sort -rn | cut -f2)
+        if [[ ${#jars[@]} -eq 0 ]]; then
+          echo "::error::No jar produced in ${{ inputs.project_dir }}/target"
+          exit 1
+        fi
+        cp "${jars[0]}" target/app.jar
+        echo "Staged ${jars[0]} -> target/app.jar"
+        echo "source=${jars[0]}" >> "$GITHUB_OUTPUT"
+        echo "size=$(du -h target/app.jar | cut -f1)" >> "$GITHUB_OUTPUT"

@@ -1,0 +1,49 @@
+name: Set up Artifactory
+description: >
+  Installs the JFrog CLI and points Maven resolution at the bank's virtual repository.
+  This action is the single owner of Maven resolution and credentials; setup-java
+  supplies only the JDK and the cache. Replaces tasks/jf_cli_config.yaml.
+
+inputs:
+  jf_url:
+    description: Artifactory base URL
+    required: true
+  username:
+    description: Artifactory username
+    required: true
+  token:
+    description: Artifactory access token
+    required: true
+  maven_repo:
+    description: Virtual Maven repository key used to resolve dependencies
+    required: true
+  project_dir:
+    description: Directory containing the project's pom.xml
+    required: true
+  download_repository:
+    description: Artifactory remote mirroring releases.jfrog.io. Blank uses the public internet.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install the JFrog CLI
+      uses: jfrog/setup-jfrog-cli@v4
+      env:
+        JF_URL: ${{ inputs.jf_url }}
+        JF_USER: ${{ inputs.username }}
+        JF_PASSWORD: ${{ inputs.token }}
+      with:
+        download-repository: ${{ inputs.download_repository }}
+
+    - name: Point Maven resolution at Artifactory
+      shell: bash
+      working-directory: ${{ inputs.project_dir }}
+      env:
+        MAVEN_REPO: ${{ inputs.maven_repo }}
+      run: |
+        set -euo pipefail
+        jf mvn-config \
+          --repo-resolve-releases "$MAVEN_REPO" \
+          --repo-resolve-snapshots "$MAVEN_REPO"

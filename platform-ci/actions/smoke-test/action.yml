@@ -1,0 +1,44 @@
+name: Smoke test the jar
+description: >
+  Boots the staged jar and requires it to still be running when the timer expires.
+  `timeout` reports 124 when it had to kill a healthy process, so 124 is the success
+  case; a clean exit 0 means the service died on its own and is a failure.
+  Replaces the smoke-test step of tasks/build_java.yaml.
+
+inputs:
+  project_dir:
+    description: Directory containing target/app.jar
+    required: true
+  seconds:
+    description: How long the application must stay alive
+    required: false
+    default: '10'
+
+runs:
+  using: composite
+  steps:
+    - name: Boot the jar
+      shell: bash
+      working-directory: ${{ inputs.project_dir }}
+      env:
+        SECONDS_TO_LIVE: ${{ inputs.seconds }}
+      run: |
+        set -uo pipefail
+        log="$RUNNER_TEMP/smoke.log"
+        timeout "$SECONDS_TO_LIVE" java -jar target/app.jar > "$log" 2>&1
+        rc=$?
+        case "$rc" in
+          124)
+            echo "Application stayed up for ${SECONDS_TO_LIVE}s."
+            ;;
+          0)
+            echo "::error::Application exited on its own within ${SECONDS_TO_LIVE}s."
+            tail -50 "$log"
+            exit 1
+            ;;
+          *)
+            echo "::error::Application crashed during smoke test (exit $rc)."
+            tail -50 "$log"
+            exit 1
+            ;;
+        esac

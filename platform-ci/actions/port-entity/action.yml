@@ -1,0 +1,88 @@
+name: Upsert the Port.io entity
+description: >
+  Reports the build to the Port.io developer portal so the service catalogue reflects
+  what this run produced. Skips silently when credentials are absent, matching the
+  Ansible task's credential guard. Replaces tasks/port.yaml.
+
+inputs:
+  client_id:
+    description: Port.io client id. Blank skips the upsert.
+    required: false
+    default: ''
+  client_secret:
+    description: Port.io client secret. Blank skips the upsert.
+    required: false
+    default: ''
+  blueprint:
+    description: Port blueprint identifier
+    required: true
+  identifier:
+    description: Entity identifier
+    required: true
+  title:
+    description: Entity title
+    required: true
+  status:
+    description: Build result
+    required: true
+  image:
+    description: Image reference this run produced
+    required: false
+    default: ''
+  base_url:
+    description: Port API base URL
+    required: false
+    default: https://api.getport.io
+
+runs:
+  using: composite
+  steps:
+    - name: Check credentials
+      id: creds
+      shell: bash
+      env:
+        CLIENT_ID: ${{ inputs.client_id }}
+        CLIENT_SECRET: ${{ inputs.client_secret }}
+      run: |
+        set -euo pipefail
+        if [[ -z "$CLIENT_ID" || -z "$CLIENT_SECRET" ]]; then
+          echo "Port.io credentials are not configured; skipping the entity upsert."
+          echo "present=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Build the properties payload
+      id: payload
+      if: steps.creds.outputs.present == 'true'
+      shell: bash
+      env:
+        STATUS: ${{ inputs.status }}
+        IMAGE: ${{ inputs.image }}
+      run: |
+        set -euo pipefail
+        run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+        json=$(jq -nc \
+          --arg status "$STATUS" \
+          --arg image "$IMAGE" \
+          --arg commit "$GITHUB_SHA" \
+          --arg branch "$GITHUB_REF_NAME" \
+          --arg run_url "$run_url" \
+          --arg actor "$GITHUB_ACTOR" \
+          --arg repo "$GITHUB_REPOSITORY" \
+          '{buildStatus: $status, image: $image, commit: $commit, branch: $branch,
+            runUrl: $run_url, triggeredBy: $actor, repository: $repo}')
+        echo "json=$json" >> "$GITHUB_OUTPUT"
+
+    - name: Upsert
+      if: steps.creds.outputs.present == 'true'
+      uses: port-labs/port-github-action@v1
+      with:
+        clientId: ${{ inputs.client_id }}
+        clientSecret: ${{ inputs.client_secret }}
+        baseUrl: ${{ inputs.base_url }}
+        operation: UPSERT
+        identifier: ${{ inputs.identifier }}
+        blueprint: ${{ inputs.blueprint }}
+        title: ${{ inputs.title }}
+        properties: ${{ steps.payload.outputs.json }}

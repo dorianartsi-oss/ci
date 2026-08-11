@@ -1,0 +1,29 @@
+name: Publish build info
+description: >
+  Ties the dependency manifest recorded by `jf mvn` to this run and publishes it to
+  Artifactory, so the registry can answer "which commit produced this image" without
+  consulting GitHub.
+
+inputs:
+  project_dir:
+    description: Directory the build ran in
+    required: true
+  git_dir:
+    description: >
+      Absolute path to the checkout root. Must be absolute: a project several levels
+      down would otherwise resolve a relative path past the .git directory.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Collect and publish
+      shell: bash
+      working-directory: ${{ inputs.project_dir }}
+      env:
+        GIT_DIR_ABS: ${{ inputs.git_dir }}
+      run: |
+        set -euo pipefail
+        jf rt build-collect-env || true
+        jf rt build-add-git "$GIT_DIR_ABS" || true
+        jf rt build-publish

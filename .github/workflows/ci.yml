@@ -64,6 +64,10 @@ on:
         required: false
       SONAR_TOKEN:
         required: false
+      PORT_CLIENT_ID:
+        required: false
+      PORT_CLIENT_SECRET:
+        required: false
       SMTP_SERVER:
         required: false
       SMTP_USERNAME:
@@ -95,10 +99,16 @@ jobs:
       matrix: ${{ steps.resolve.outputs.matrix }}
       config: ${{ steps.resolve.outputs.config }}
       cmdb_code: ${{ steps.resolve.outputs.cmdb_code }}
+      module_name: ${{ steps.resolve.outputs.module_name }}
       sonar_scan: ${{ steps.resolve.outputs.sonar_scan }}
+      enable_quality_gate: ${{ steps.resolve.outputs.enable_quality_gate }}
+      force_continue_on_scan_failure: ${{ steps.resolve.outputs.force_continue_on_scan_failure }}
       min_coverage: ${{ steps.resolve.outputs.min_coverage }}
       fail_on_test_failure: ${{ steps.resolve.outputs.fail_on_test_failure }}
       notify_email: ${{ steps.resolve.outputs.notify_email }}
+      github_pages: ${{ steps.resolve.outputs.github_pages }}
+      port_enabled: ${{ steps.resolve.outputs.port_enabled }}
+      port_blueprint: ${{ steps.resolve.outputs.port_blueprint }}
       recipients: ${{ steps.resolve.outputs.recipients }}
       registry_host: ${{ steps.resolve.outputs.registry_host }}
       docker_repo: ${{ steps.resolve.outputs.docker_repo }}
@@ -111,9 +121,7 @@ jobs:
       - name: Record start time
         id: clock
         shell: bash
-        run: |
-          set -euo pipefail
-          echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Check out the service repository
         uses: actions/checkout@v4
@@ -165,7 +173,6 @@ jobs:
       matrix: ${{ fromJSON(needs.config.outputs.matrix) }}
 
     env:
-      PLATFORM_TOKEN: ${{ secrets.PLATFORM_REPO_TOKEN || github.token }}
       PROJECT_DIR: service/${{ inputs.service_path }}/${{ matrix.path }}
       IMAGE_REF: ${{ matrix.image_base }}:${{ github.run_number }}
       JF_URL: ${{ secrets.ARTIFACTORY_URL || format('https://{0}/artifactory', needs.config.outputs.registry_host) }}
@@ -180,19 +187,11 @@ jobs:
           path: service
           fetch-depth: 0
 
-      - name: Clean previous build output
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -rf "$PROJECT_DIR/target"
-          rm -f "$MAVEN_LOG"
-
-      - name: Validate project layout
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ -d "$PROJECT_DIR" ]] || { echo "::error::Project directory $PROJECT_DIR does not exist"; exit 1; }
-          [[ -f "$PROJECT_DIR/pom.xml" ]] || { echo "::error::No pom.xml in $PROJECT_DIR"; exit 1; }
+      - name: Prepare the workspace
+        uses: ./service/platform-ci/actions/prepare-workspace
+        with:
+          project_dir: ${{ env.PROJECT_DIR }}
+          maven_log: ${{ env.MAVEN_LOG }}
 
       - name: Set up JDK ${{ matrix.jdk_version }}
         uses: actions/setup-java@v4
@@ -201,281 +200,155 @@ jobs:
           java-version: ${{ matrix.jdk_version }}
           cache: maven
 
-      - name: Set up the JFrog CLI
-        uses: jfrog/setup-jfrog-cli@v4
-        env:
-          JF_URL: ${{ env.JF_URL }}
-          JF_USER: ${{ secrets.ARTIFACTORY_USERNAME }}
-          JF_PASSWORD: ${{ secrets.ARTIFACTORY_TOKEN }}
+      - name: Set up Artifactory
+        uses: ./service/platform-ci/actions/setup-artifactory
         with:
-          download-repository: ${{ inputs.jfrog_cli_download_repo }}
-
-      - name: Point Maven resolution at Artifactory
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        env:
-          MAVEN_REPO: ${{ needs.config.outputs.maven_repo }}
-        run: |
-          set -euo pipefail
-          jf mvn-config \
-            --repo-resolve-releases "$MAVEN_REPO" \
-            --repo-resolve-snapshots "$MAVEN_REPO"
+          jf_url: ${{ env.JF_URL }}
+          username: ${{ secrets.ARTIFACTORY_USERNAME }}
+          token: ${{ secrets.ARTIFACTORY_TOKEN }}
+          maven_repo: ${{ needs.config.outputs.maven_repo }}
+          project_dir: ${{ env.PROJECT_DIR }}
+          download_repository: ${{ inputs.jfrog_cli_download_repo }}
 
       - name: Build with Maven
-        id: mvn
-        timeout-minutes: 120
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        env:
-          MAVEN_ARGS_IN: ${{ matrix.maven_args }}
-          FAIL_ON_TEST_FAILURE: ${{ needs.config.outputs.fail_on_test_failure }}
-        run: |
-          set -euo pipefail
-          args="$MAVEN_ARGS_IN"
-          if [[ "$FAIL_ON_TEST_FAILURE" != "true" ]]; then
-            args="$args -Dmaven.test.failure.ignore=true"
-          fi
-          echo "Running: jf mvn $args"
-          set +e
-          jf mvn $args 2>&1 | tee "$MAVEN_LOG"
-          status=${PIPESTATUS[0]}
-          set -e
-          exit "$status"
-
-      - name: Diagnose unresolved dependencies
-        if: failure() && steps.mvn.outcome == 'failure'
-        shell: bash
-        run: |
-          set -uo pipefail
-          [[ -f "$MAVEN_LOG" ]] || exit 0
-          tmp=$(mktemp -d)
-          grep -E 'Downloading from ' "$MAVEN_LOG" | grep -oE 'https?://[^ ]+' | sort -u > "$tmp/requested"
-          grep -E 'Downloaded from '  "$MAVEN_LOG" | grep -oE 'https?://[^ ]+' | sort -u > "$tmp/received"
-          missing=$(comm -23 "$tmp/requested" "$tmp/received")
-          {
-            echo "### Unresolved dependencies"
-            if [[ -z "$missing" ]]; then
-              echo
-              echo "Every requested artifact was served. The failure is in compilation or tests, not the network."
-            else
-              echo
-              echo "Artifactory did not serve these artifacts:"
-              echo '```'
-              echo "$missing"
-              echo '```'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-          [[ -n "$missing" ]] && { echo "::error::Artifactory did not serve $(wc -l <<<"$missing") artifact(s); see the job summary."; }
-          rm -rf "$tmp"
-          exit 0
+        uses: ./service/platform-ci/actions/build-maven
+        with:
+          project_dir: ${{ env.PROJECT_DIR }}
+          maven_args: ${{ matrix.maven_args }}
+          fail_on_test_failure: ${{ needs.config.outputs.fail_on_test_failure }}
+          maven_log: ${{ env.MAVEN_LOG }}
 
       - name: Stage the application jar
         id: jar
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t jars < <(find target -maxdepth 1 -name '*.jar' \
-            ! -name '*-sources.jar' ! -name '*-javadoc.jar' ! -name 'app.jar' \
-            -printf '%s\t%p\n' | sort -rn | cut -f2)
-          if [[ ${#jars[@]} -eq 0 ]]; then
-            echo "::error::No jar produced in $PROJECT_DIR/target"
-            exit 1
-          fi
-          cp "${jars[0]}" target/app.jar
-          echo "Staged ${jars[0]} -> target/app.jar (largest jar wins: the repackaged executable jar dominates the thin original)"
-          echo "source=${jars[0]}" >> "$GITHUB_OUTPUT"
-          echo "size=$(du -h target/app.jar | cut -f1)" >> "$GITHUB_OUTPUT"
+        uses: ./service/platform-ci/actions/stage-jar
+        with:
+          project_dir: ${{ env.PROJECT_DIR }}
 
-      - name: Smoke test the jar (exit 124 means it stayed up)
+      - name: Smoke test the jar
         if: matrix.smoke_test
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        env:
-          SECONDS_TO_LIVE: ${{ matrix.smoke_test_seconds }}
-        run: |
-          set -uo pipefail
-          timeout "$SECONDS_TO_LIVE" java -jar target/app.jar > "$RUNNER_TEMP/smoke.log" 2>&1
-          rc=$?
-          case "$rc" in
-            124) echo "Application stayed up for ${SECONDS_TO_LIVE}s." ;;
-            0)   echo "::error::Application exited on its own within ${SECONDS_TO_LIVE}s."
-                 tail -50 "$RUNNER_TEMP/smoke.log"; exit 1 ;;
-            *)   echo "::error::Application crashed during smoke test (exit $rc)."
-                 tail -50 "$RUNNER_TEMP/smoke.log"; exit 1 ;;
-          esac
+        uses: ./service/platform-ci/actions/smoke-test
+        with:
+          project_dir: ${{ env.PROJECT_DIR }}
+          seconds: ${{ matrix.smoke_test_seconds }}
 
       - name: Enforce the coverage gate
         id: coverage
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        env:
-          MIN_COVERAGE: ${{ needs.config.outputs.min_coverage }}
-        run: |
-          set -euo pipefail
-          report=target/site/jacoco/jacoco.xml
-          if [[ ! -f "$report" ]]; then
-            echo "::warning::No JaCoCo report at $report; coverage gate skipped. Add the jacoco-maven-plugin to enforce it."
-            echo "percent=n/a" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          counter=$(grep -o '<counter type="LINE"[^/]*/>' "$report" | tail -1)
-          missed=$(sed -n 's/.*missed="\([0-9]*\)".*/\1/p' <<<"$counter")
-          covered=$(sed -n 's/.*covered="\([0-9]*\)".*/\1/p' <<<"$counter")
-          total=$(( missed + covered ))
-          if [[ "$total" -eq 0 ]]; then
-            echo "::warning::JaCoCo reported no instrumented lines; coverage gate skipped."
-            echo "percent=n/a" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          pct=$(awk -v c="$covered" -v t="$total" 'BEGIN { printf "%.2f", (c * 100) / t }')
-          echo "percent=$pct" >> "$GITHUB_OUTPUT"
-          echo "Line coverage: ${pct}% (gate: ${MIN_COVERAGE}%)"
-          awk -v p="$pct" -v m="$MIN_COVERAGE" 'BEGIN { exit (p + 0 >= m + 0) ? 0 : 1 }' || {
-            echo "::error::Line coverage ${pct}% is below the ${MIN_COVERAGE}% gate for this CMDB code."
-            exit 1
-          }
+        uses: ./service/platform-ci/actions/coverage-gate
+        with:
+          project_dir: ${{ env.PROJECT_DIR }}
+          min_coverage: ${{ needs.config.outputs.min_coverage }}
+          enable_quality_gate: ${{ needs.config.outputs.enable_quality_gate }}
+          force_continue_on_scan_failure: ${{ needs.config.outputs.force_continue_on_scan_failure }}
 
       - name: SonarQube analysis
         if: needs.config.outputs.sonar_scan == 'true'
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        env:
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          PROJECT_KEY: ${{ needs.config.outputs.cmdb_code }}-${{ matrix.name }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${SONAR_HOST_URL:-}" || -z "${SONAR_TOKEN:-}" ]]; then
-            echo "::error::scan.sonar_scan is true but SONAR_HOST_URL/SONAR_TOKEN are not set."
-            exit 1
-          fi
-          jf mvn sonar:sonar \
-            -Dsonar.host.url="$SONAR_HOST_URL" \
-            -Dsonar.token="$SONAR_TOKEN" \
-            -Dsonar.projectKey="$PROJECT_KEY" \
-            -Dsonar.projectName="$PROJECT_KEY" \
-            -Dsonar.qualitygate.wait=true \
-            -Dsonar.scm.revision="$GITHUB_SHA"
+        uses: ./service/platform-ci/actions/sonar-scan
+        with:
+          project_dir: ${{ env.PROJECT_DIR }}
+          host_url: ${{ secrets.SONAR_HOST_URL }}
+          token: ${{ secrets.SONAR_TOKEN }}
+          project_key: ${{ needs.config.outputs.cmdb_code }}-${{ matrix.name }}
+          enable_quality_gate: ${{ needs.config.outputs.enable_quality_gate }}
+          force_continue_on_scan_failure: ${{ needs.config.outputs.force_continue_on_scan_failure }}
 
-      - name: Set up Buildx
-        if: matrix.use_buildkit
-        uses: docker/setup-buildx-action@v3
+      - name: Copy configuration files
+        if: matrix.configs_files_to_copy != '[]'
+        uses: ./service/platform-ci/actions/copy-config-files
+        with:
+          project_dir: ${{ env.PROJECT_DIR }}
+          files: ${{ matrix.configs_files_to_copy }}
+          source_root: service/${{ inputs.service_path }}
 
-      - name: Log in to Artifactory
-        uses: docker/login-action@v3
+      - name: Build and push the image
+        id: push
+        uses: ./service/platform-ci/actions/docker-build-push
         with:
           registry: ${{ needs.config.outputs.registry_host }}
           username: ${{ secrets.ARTIFACTORY_USERNAME }}
           password: ${{ secrets.ARTIFACTORY_TOKEN }}
-
-      - name: Build and push the image
-        id: push
-        if: matrix.use_buildkit
-        uses: docker/build-push-action@v6
-        with:
           context: ${{ env.PROJECT_DIR }}/${{ matrix.docker_context }}
-          file: ${{ env.PROJECT_DIR }}/${{ matrix.dockerfile }}
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          tags: |
-            ${{ matrix.image_base }}:${{ github.run_number }}
-            ${{ matrix.image_base }}:${{ github.sha }}
-          labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            io.corporate.cmdb-code=${{ needs.config.outputs.cmdb_code }}
-            io.corporate.build-number=${{ github.run_number }}
-
-      - name: Build and push the image (no BuildKit)
-        id: push_plain
-        if: ${{ !matrix.use_buildkit }}
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        env:
-          DOCKER_BUILDKIT: '0'
-        run: |
-          set -euo pipefail
-          docker build \
-            -f "${{ matrix.dockerfile }}" \
-            -t "${{ matrix.image_base }}:${{ github.run_number }}" \
-            -t "${{ matrix.image_base }}:${{ github.sha }}" \
-            "${{ matrix.docker_context }}"
-          docker push "${{ matrix.image_base }}:${{ github.run_number }}"
-          docker push "${{ matrix.image_base }}:${{ github.sha }}"
+          dockerfile: ${{ env.PROJECT_DIR }}/${{ matrix.dockerfile }}
+          image_base: ${{ matrix.image_base }}
+          cmdb_code: ${{ needs.config.outputs.cmdb_code }}
+          use_buildkit: ${{ matrix.use_buildkit }}
 
       - name: Publish build info
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          jf rt build-collect-env || true
-          jf rt build-add-git "$GITHUB_WORKSPACE/service" || true
-          jf rt build-publish
+        uses: ./service/platform-ci/actions/publish-build-info
+        with:
+          project_dir: ${{ env.PROJECT_DIR }}
+          git_dir: ${{ github.workspace }}/service
 
       - name: Stamp audit properties on the image
-        if: always() && (steps.push.outcome == 'success' || steps.push_plain.outcome == 'success')
-        shell: bash
-        env:
-          DOCKER_REPO: ${{ needs.config.outputs.docker_repo }}
-          IMAGE_NAME: ${{ matrix.docker_image_name }}
-          SONAR_SCAN: ${{ needs.config.outputs.sonar_scan }}
-          CMDB_CODE: ${{ needs.config.outputs.cmdb_code }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$DOCKER_REPO" ]]; then
-            echo "::warning::registry.docker_repo is blank, so the image cannot be addressed by repository key. Audit properties were not stamped and CD will have nothing to gate on."
-            exit 0
-          fi
-          props="cmdb_code=${CMDB_CODE}"
-          props="${props};scan.sonar_scan=${SONAR_SCAN}"
-          props="${props};git_commit_hash=${GITHUB_SHA}"
-          props="${props};git_branch=${GITHUB_REF_NAME}"
-          props="${props};build_timestamp=$(TZ=Asia/Jerusalem date '+%Y-%m-%dT%H:%M:%S%z')"
-          props="${props};build_name=${JFROG_CLI_BUILD_NAME}"
-          props="${props};build_number=${JFROG_CLI_BUILD_NUMBER}"
-          props="${props};ci_run_id=${GITHUB_RUN_ID}"
-          props="${props};triggered_by=${GITHUB_ACTOR}"
-          for tag in "$GITHUB_RUN_NUMBER" "$GITHUB_SHA"; do
-            echo "Stamping ${DOCKER_REPO}/${IMAGE_NAME}/${tag}"
-            jf rt set-props "${DOCKER_REPO}/${IMAGE_NAME}/${tag}/*" "$props" --fail-no-op
-          done
+        if: always() && steps.push.outcome == 'success'
+        uses: ./service/platform-ci/actions/stamp-properties
+        with:
+          docker_repo: ${{ needs.config.outputs.docker_repo }}
+          image_name: ${{ matrix.docker_image_name }}
+          cmdb_code: ${{ needs.config.outputs.cmdb_code }}
+          sonar_scan: ${{ needs.config.outputs.sonar_scan }}
+          build_name: ${{ env.JFROG_CLI_BUILD_NAME }}
+          build_number: ${{ env.JFROG_CLI_BUILD_NUMBER }}
 
       - name: Write the build summary
         if: always()
-        shell: bash
-        env:
-          RESULT: ${{ job.status }}
-          JAR_SOURCE: ${{ steps.jar.outputs.source }}
-          JAR_SIZE: ${{ steps.jar.outputs.size }}
-          COVERAGE: ${{ steps.coverage.outputs.percent }}
-          SONAR_SCAN: ${{ needs.config.outputs.sonar_scan }}
-          GATES_SOURCE: ${{ needs.config.outputs.gates_source }}
-        run: |
-          set -euo pipefail
-          {
-            echo "## ${{ matrix.name }} — ${RESULT}"
-            echo
-            echo "| | |"
-            echo "|---|---|"
-            echo "| Image | \`${IMAGE_REF}\` |"
-            echo "| Jar | \`${JAR_SOURCE:-not produced}\` (${JAR_SIZE:-—}) |"
-            echo "| JDK | ${{ matrix.jdk_version }} |"
-            echo "| Line coverage | ${COVERAGE:-n/a} |"
-            echo "| SonarQube | ${SONAR_SCAN} |"
-            echo "| Quality gates | \`${GATES_SOURCE}\` |"
-            echo "| Commit | \`${GITHUB_SHA}\` |"
-            echo "| Build info | ${JFROG_CLI_BUILD_NAME} / ${JFROG_CLI_BUILD_NUMBER} |"
-          } >> "$GITHUB_STEP_SUMMARY"
+        uses: ./service/platform-ci/actions/build-summary
+        with:
+          project_name: ${{ matrix.name }}
+          result: ${{ job.status }}
+          image: ${{ env.IMAGE_REF }}
+          jar_source: ${{ steps.jar.outputs.source }}
+          jar_size: ${{ steps.jar.outputs.size }}
+          jdk_version: ${{ matrix.jdk_version }}
+          coverage: ${{ steps.coverage.outputs.percent }}
+          sonar_scan: ${{ needs.config.outputs.sonar_scan }}
+          gates_source: ${{ needs.config.outputs.gates_source }}
+          build_name: ${{ env.JFROG_CLI_BUILD_NAME }}
+          build_number: ${{ env.JFROG_CLI_BUILD_NUMBER }}
+
+  pages:
+    name: Publish the report
+    needs: [config, build]
+    if: always() && needs.config.outputs.github_pages == 'true'
+    runs-on: ${{ inputs.runner_label }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Check out the service repository
+        uses: actions/checkout@v4
+        with:
+          path: service
+          fetch-depth: 1
+
+      - name: Render the build report
+        uses: ./service/platform-ci/actions/render-report
+        with:
+          output_dir: report
+          service: ${{ inputs.service_path }}
+          module_name: ${{ needs.config.outputs.module_name }}
+          status: ${{ needs.build.result }}
+          images: ${{ needs.config.outputs.images }}
+          gates_source: ${{ needs.config.outputs.gates_source }}
+
+      - name: Upload the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: report
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
 
   notify:
     name: Notify
     needs: [config, build]
-    if: always() && needs.config.outputs.notify_email == 'true'
+    if: always()
     runs-on: ${{ inputs.runner_label }}
     env:
-      PLATFORM_TOKEN: ${{ secrets.PLATFORM_REPO_TOKEN || github.token }}
       SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
     steps:
       - name: Check out the service repository
@@ -494,8 +367,20 @@ jobs:
           elapsed=$(( $(date +%s) - STARTED_AT ))
           printf 'text=%dm %02ds\n' $(( elapsed / 60 )) $(( elapsed % 60 )) >> "$GITHUB_OUTPUT"
 
+      - name: Upsert the Port.io entity
+        if: needs.config.outputs.port_enabled == 'true'
+        uses: ./service/platform-ci/actions/port-entity
+        with:
+          client_id: ${{ secrets.PORT_CLIENT_ID }}
+          client_secret: ${{ secrets.PORT_CLIENT_SECRET }}
+          blueprint: ${{ needs.config.outputs.port_blueprint }}
+          identifier: ${{ needs.config.outputs.cmdb_code }}
+          title: ${{ needs.config.outputs.module_name }}
+          status: ${{ needs.build.result }}
+          image: ${{ needs.config.outputs.images }}
+
       - name: Send the build report
-        if: env.SMTP_SERVER != ''
+        if: needs.config.outputs.notify_email == 'true' && env.SMTP_SERVER != ''
         uses: ./service/platform-ci/actions/notify-email
         with:
           smtp_server: ${{ secrets.SMTP_SERVER }}
@@ -504,6 +389,6 @@ jobs:
           from_address: ${{ secrets.SMTP_FROM || 'ci-pipeline@corporate.io' }}
           recipients: ${{ needs.config.outputs.recipients }}
           status: ${{ needs.build.result }}
-          service: ${{ inputs.service_path }}
+          service: ${{ needs.config.outputs.module_name }}
           image: ${{ needs.config.outputs.images }}
           duration: ${{ steps.duration.outputs.text }}

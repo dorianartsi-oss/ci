@@ -1,0 +1,76 @@
+name: Write the build summary
+description: >
+  Renders the per-project build report into the GitHub Actions run summary.
+  Replaces tasks/summary.yaml.
+
+inputs:
+  project_name:
+    description: Name of the project from projects[]
+    required: true
+  result:
+    description: Job status
+    required: true
+  image:
+    description: Image reference this project produced
+    required: true
+  jar_source:
+    description: Jar that was staged
+    required: false
+    default: ''
+  jar_size:
+    description: Size of the staged jar
+    required: false
+    default: ''
+  jdk_version:
+    description: JDK the build ran on
+    required: true
+  coverage:
+    description: Measured line coverage
+    required: false
+    default: 'n/a'
+  sonar_scan:
+    description: Whether SonarQube ran
+    required: true
+  gates_source:
+    description: Gate file the thresholds came from
+    required: true
+  build_name:
+    description: JFrog build name
+    required: true
+  build_number:
+    description: JFrog build number
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Render
+      shell: bash
+      env:
+        PROJECT_NAME: ${{ inputs.project_name }}
+        RESULT: ${{ inputs.result }}
+        IMAGE: ${{ inputs.image }}
+        JAR_SOURCE: ${{ inputs.jar_source }}
+        JAR_SIZE: ${{ inputs.jar_size }}
+        JDK_VERSION: ${{ inputs.jdk_version }}
+        COVERAGE: ${{ inputs.coverage }}
+        SONAR_SCAN: ${{ inputs.sonar_scan }}
+        GATES_SOURCE: ${{ inputs.gates_source }}
+        BUILD_NAME: ${{ inputs.build_name }}
+        BUILD_NUMBER: ${{ inputs.build_number }}
+      run: |
+        set -euo pipefail
+        {
+          echo "## ${PROJECT_NAME} — ${RESULT}"
+          echo
+          echo "| | |"
+          echo "|---|---|"
+          echo "| Image | \`${IMAGE}\` |"
+          echo "| Jar | \`${JAR_SOURCE:-not produced}\` (${JAR_SIZE:-—}) |"
+          echo "| JDK | ${JDK_VERSION} |"
+          echo "| Line coverage | ${COVERAGE:-n/a} |"
+          echo "| SonarQube | ${SONAR_SCAN} |"
+          echo "| Quality gates | \`${GATES_SOURCE}\` |"
+          echo "| Commit | \`${GITHUB_SHA}\` |"
+          echo "| Build info | ${BUILD_NAME} / ${BUILD_NUMBER} |"
+        } >> "$GITHUB_STEP_SUMMARY"

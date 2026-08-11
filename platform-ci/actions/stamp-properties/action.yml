@@ -1,0 +1,59 @@
+name: Stamp audit properties
+description: >
+  Attaches build, commit and scan metadata to every tag of the pushed image. These
+  properties are the gatekeeper the CD pipelines read before promoting an image out of
+  the build repository. Replaces tasks/set_properties_jfrog.yaml.
+
+inputs:
+  docker_repo:
+    description: Artifactory Docker repository key
+    required: true
+  image_name:
+    description: Image name inside the repository
+    required: true
+  cmdb_code:
+    description: CMDB code
+    required: true
+  sonar_scan:
+    description: Whether SonarQube ran
+    required: true
+  build_name:
+    description: JFrog build name
+    required: true
+  build_number:
+    description: JFrog build number
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set properties on every tag
+      shell: bash
+      env:
+        DOCKER_REPO: ${{ inputs.docker_repo }}
+        IMAGE_NAME: ${{ inputs.image_name }}
+        CMDB_CODE: ${{ inputs.cmdb_code }}
+        SONAR_SCAN: ${{ inputs.sonar_scan }}
+        BUILD_NAME: ${{ inputs.build_name }}
+        BUILD_NUMBER: ${{ inputs.build_number }}
+      run: |
+        set -euo pipefail
+        if [[ -z "$DOCKER_REPO" ]]; then
+          echo "::warning::registry.docker_repo is blank, so the image cannot be addressed by repository key. Audit properties were not stamped and CD will have nothing to gate on."
+          exit 0
+        fi
+
+        props="cmdb_code=${CMDB_CODE}"
+        props="${props};scan.sonar_scan=${SONAR_SCAN}"
+        props="${props};git_commit_hash=${GITHUB_SHA}"
+        props="${props};git_branch=${GITHUB_REF_NAME}"
+        props="${props};build_timestamp=$(TZ=Asia/Jerusalem date '+%Y-%m-%dT%H:%M:%S%z')"
+        props="${props};build_name=${BUILD_NAME}"
+        props="${props};build_number=${BUILD_NUMBER}"
+        props="${props};ci_run_id=${GITHUB_RUN_ID}"
+        props="${props};triggered_by=${GITHUB_ACTOR}"
+
+        for tag in "$GITHUB_RUN_NUMBER" "$GITHUB_SHA"; do
+          echo "Stamping ${DOCKER_REPO}/${IMAGE_NAME}/${tag}"
+          jf rt set-props "${DOCKER_REPO}/${IMAGE_NAME}/${tag}/*" "$props" --fail-no-op
+        done
